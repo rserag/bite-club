@@ -1,6 +1,6 @@
 import sqlalchemy as sa
 
-SCHEMA_REVISION = "0020_supplement_plans"
+SCHEMA_REVISION = "0021_training_allocations"
 metadata = sa.MetaData()
 
 profile = sa.Table(
@@ -334,6 +334,7 @@ meal_item_nutrients = sa.Table(
 # Register temporary draft tables after their shared foreign-key targets exist.
 from nutrition_bot.adapters.database import schema_adaptive as schema_adaptive  # noqa: E402
 from nutrition_bot.adapters.database import schema_aliases as schema_aliases  # noqa: E402
+from nutrition_bot.adapters.database import schema_allocations as schema_allocations  # noqa: E402
 from nutrition_bot.adapters.database import schema_checkins as schema_checkins  # noqa: E402
 from nutrition_bot.adapters.database import schema_drafts as schema_drafts  # noqa: E402
 from nutrition_bot.adapters.database import schema_favorites as schema_favorites  # noqa: E402

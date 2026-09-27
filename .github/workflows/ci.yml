@@ -1,7 +1,9 @@
 name: Bite Club checks
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
@@ -27,6 +29,14 @@ jobs:
       - run: uv run --no-sync ruff check .
       - run: uv run --no-sync ruff format --check .
       - run: uv run --no-sync mypy
+      - name: Install checksum-pinned restic for synthetic local restore tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/backup-tools"
+          curl --fail --location --retry 3 https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2 --output "$RUNNER_TEMP/backup-tools/restic.bz2"
+          printf 'f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c  %s\n' "$RUNNER_TEMP/backup-tools/restic.bz2" | sha256sum --check
+          bzip2 --decompress "$RUNNER_TEMP/backup-tools/restic.bz2"
+          chmod +x "$RUNNER_TEMP/backup-tools/restic"
+          echo "$RUNNER_TEMP/backup-tools" >> "$GITHUB_PATH"
       - run: uv run --no-sync pytest tests tools/telegram_e2e/tests -q
       - name: Credential-free synthetic demo
         run: uv run --no-sync python scripts/demo.py
@@ -43,6 +53,10 @@ jobs:
       - run: docker build --tag bite-club:ci .
       - name: Non-root container and offline migration smoke test
         run: bash scripts/container-smoke.sh bite-club:ci
+      - name: Offline application suite on the runtime distribution
+        run: |
+          docker build --target test --tag bite-club:test .
+          docker run --rm --network none --read-only --tmpfs /tmp --cpus 2 --memory 1g bite-club:test
       - name: Compose validation with placeholders only
         env:
           BOT_ENV_FILE: .env.example

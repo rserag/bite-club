@@ -124,6 +124,10 @@ def _target_lines(
         f"Target T{target.id}: {target.energy_kcal} kcal · P {target.protein_grams} g · "
         f"F {target.fat_grams} g · C {target.carbohydrate_grams} g."
     )
+    if target.allocation_id is not None:
+        lines.append(
+            f"Approved training allocation A{target.allocation_id}; weekly calories unchanged."
+        )
     if status.unresolved_drafts:
         lines.append(
             "Remaining targets withheld until unresolved meal drafts are resolved or cancelled."

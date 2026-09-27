@@ -28,6 +28,13 @@ from nutrition_bot.application.meal_conversation import MealReply, handle_callba
 from nutrition_bot.config import BotSettings
 from nutrition_bot.telegram.auth import authorized
 
+MAX_PENDING_UPDATES = 1000
+MAX_PENDING_REPLIES = 1000
+
+
+class QueueFullError(Exception):
+    """Pause intake without acknowledging any part of the uncommitted batch."""
+
 
 @dataclass
 class _HeartbeatProgress:
@@ -51,8 +58,21 @@ class Service:
         if not updates:
             return
         async with self.store.write() as connection:
+            pending = int(
+                await connection.scalar(
+                    sa.select(sa.func.count()).select_from(inbox).where(inbox.c.status == "pending")
+                )
+                or 0
+            )
             for update in sorted(updates, key=lambda value: value.update_id):
                 if authorized(update, self.settings):
+                    known = await connection.scalar(
+                        sa.select(inbox.c.update_id).where(inbox.c.update_id == update.update_id)
+                    )
+                    if known is not None:
+                        continue
+                    if pending >= MAX_PENDING_UPDATES:
+                        raise QueueFullError()
                     await connection.execute(
                         insert(inbox)
                         .values(
@@ -63,6 +83,7 @@ class Service:
                         )
                         .on_conflict_do_nothing(index_elements=["update_id"])
                     )
+                    pending += 1
             next_offset = max(update.update_id for update in updates) + 1
             await connection.execute(
                 insert(cursor)
@@ -97,7 +118,8 @@ class Service:
             "weekly reports use /week; conservative calorie reviews use /adjust; "
             "quick gym/BJJ logs use /gym and /bjj, with optional session details; "
             "BJJ plans, recovery check-ins and /load workload guidance are available. "
-            "Training nutrition and reminders are not yet.\n"
+            "Reviewed training allocation uses /allocation; food suggestions and reminders "
+            "are not yet available.\n"
             "AI is disabled; no paid calls are made."
         )
 
@@ -105,6 +127,18 @@ class Service:
         # All processing is a local transaction. A crash leaves this row pending;
         # no in-progress inbox lease needs reclaiming and no network occurs here.
         async with self.store.write() as connection:
+            queued = int(
+                await connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(outbox)
+                    .where(outbox.c.status.in_(["queued", "sending"]))
+                )
+                or 0
+            )
+            # A callback can produce both a message and a callback answer. Reserve both
+            # before any action mutation, leaving the inbox untouched under backpressure.
+            if queued > MAX_PENDING_REPLIES - 2:
+                return False
             # Check inactivity before callback validation, outside rejection savepoints.
             await expire_drafts(connection, now=time.time())
             row = (
@@ -636,6 +670,7 @@ class Service:
                         )
                     if result.kind in {
                         "meal_rejected",
+                        "allocation_rejected",
                         "weight_rejected",
                         "goal_rejected",
                         "daily_rejected",

@@ -2,7 +2,7 @@
 
 This document defines work packages and acceptance criteria, not a live task ledger. Maintainer execution records use local Beads and stay private; public contributors can use GitHub issues. See the README for the current implemented scope.
 
-Current source includes T01–T05, T06.1–T06.5, T06.6.1 nutrient references/review, supplement ledger/plans/reporting, and the separate real-user Telegram test runner. Training-day allocation and suggestions, AI/photo workflows, reminders, exports, automated encrypted backups and delivery remain future work. Local tests and selected live scenarios are evidence for those tested paths, not complete production readiness.
+Current source includes T01–T05, T06.1–T06.5, T06.6.1 nutrient references/review, T06.6.2 reviewed future-week allocation, supplement ledger/plans/reporting, and the separate real-user Telegram test runner. Operator-run encrypted backup/restore and bounded runtime-recovery tools are available. Verified-food suggestions, AI/photo workflows, reminders, exports, scheduled off-site backups and deployment remain future work. Local tests and selected live scenarios are evidence for those tested paths, not complete production readiness.
 
 ## Architecture and boundaries
 

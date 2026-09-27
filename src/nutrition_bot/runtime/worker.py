@@ -3,7 +3,7 @@ import logging
 import random
 import time
 
-from nutrition_bot.application.service import Service
+from nutrition_bot.application.service import QueueFullError, Service
 from nutrition_bot.runtime.health import COMPONENTS
 from nutrition_bot.telegram.gateway import Gateway, RejectedError, RetryableError
 
@@ -41,7 +41,11 @@ async def receiver(service: Service, gateway: Gateway, stop: asyncio.Event) -> N
             await pause(service, "receiver", stop, max(exc.delay, backoff(attempts)), "degraded")
             continue
         # Persistence errors escape and stop the process; never acknowledge uncommitted intake.
-        await service.accept(updates)
+        try:
+            await service.accept(updates)
+        except QueueFullError:
+            await pause(service, "receiver", stop, 5, "degraded")
+            continue
         await service.pulse("receiver", success=True)
         attempts = 0
         if not updates:

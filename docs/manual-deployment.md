@@ -182,7 +182,7 @@ Logs contain event names and error classes, with rotation configured by Compose.
 
 ## Manual backup and isolated restore drill
 
-Automated backups and off-site delivery are not implemented. The following is an operator-run procedure, not a claim that backup or recovery has already been tested. A backup on the same VM does not cover VM loss. Copy verified backups to separate private storage, using encryption before storing them with an external service. Keep at least one previous verified snapshot.
+Operator-run SQLite snapshots, encrypted restic upload and isolated restore verification are available in the [backup guide](backup-and-restore.md). Scheduling and actual off-site destination activation remain separate work. The following stopped-volume procedure remains an alternative, not a claim that production recovery has already been tested. A backup on the same VM does not cover VM loss. Copy verified backups to separate private storage, using encryption before storing them with an external service. Keep at least one previous verified snapshot.
 
 Stop the only worker and keep it stopped throughout the archive. Use the actual current production image in `BOT_IMAGE`. If a recovery override is active, use its volume name instead of the default below. All writers must be stopped, including one-off maintenance containers. Do not copy only the SQLite main file while it is live: committed records may still be in its WAL.
 

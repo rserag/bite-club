@@ -143,7 +143,7 @@ async def test_status_reports_and_unsupported_food_is_not_logged(service, store)
     replies = await rows(store, outbox)
     status = replies[0]["payload"]["text"]
     assert "BJJ plans, recovery check-ins and /load workload guidance are available" in status
-    assert "Training nutrition and reminders are not yet" in status
+    assert "Reviewed training allocation uses /allocation" in status
     assert "AI is disabled" in status
     assert "nothing was logged" in replies[1]["payload"]["text"]
     assert not await rows(store, profile)

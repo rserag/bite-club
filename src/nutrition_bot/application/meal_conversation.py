@@ -624,6 +624,13 @@ async def handle_message(
             return MealReply(
                 "Editing that message did not create a meal. Send a new measured log to save it."
             )
+        from nutrition_bot.application.allocation_conversation import handle_allocation_message
+
+        allocation = await handle_allocation_message(
+            connection, text, action_key=action_key, today=datetime.now(ZoneInfo(timezone)).date()
+        )
+        if allocation is not None:
+            return allocation
         from nutrition_bot.application.daily_conversation import handle_daily_message
 
         daily = await handle_daily_message(
