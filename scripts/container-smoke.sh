@@ -14,13 +14,24 @@ docker run --rm --network none --read-only --cap-drop ALL \
   --mount "type=volume,src=$volume_name,dst=/data" \
   --entrypoint python "$image_name" -c '
 import os
+import ssl
+from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 from nutrition_bot.cli import migrate
 from nutrition_bot.config import StorageSettings
+from nutrition_bot.runtime.backup import snapshot, verify_snapshot
 from nutrition_bot.runtime.health import check_health
 assert os.getuid() != 0
 settings = StorageSettings()
 migrate(settings)
 assert check_health(settings).reason == "worker_stale"
 assert settings.database_path.is_file()
-print("Non-root persistence and migration smoke test passed.")
+assert ssl.create_default_context().cert_store_stats()["x509_ca"] > 0
+assert datetime(2026, 1, 1, tzinfo=ZoneInfo("America/New_York")).utcoffset() == timedelta(hours=-5)
+assert datetime(2026, 7, 1, tzinfo=ZoneInfo("America/New_York")).utcoffset() == timedelta(hours=-4)
+backup = Path("/data/smoke-backup")
+manifest = snapshot(settings.database_path, backup, "sha256:" + "0" * 64)
+assert verify_snapshot(backup) == manifest
+print("Non-root persistence, migrations, backup, TLS roots and timezone smoke test passed.")
 '

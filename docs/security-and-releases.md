@@ -19,6 +19,20 @@ Gitleaks has exact exceptions only for named synthetic Telegram fixtures. Never 
 an entire directory to an allowlist to hide a real credential. Public Actions logs
 and artifacts must not contain private databases, tracker exports or backend logs.
 
+## Runtime base and compatibility
+
+Build, test, and runtime stages use the same digest-pinned official Python 3.13
+Alpine 3.24 image. This removes unused Debian system utilities implicated by the
+previous image scan; vulnerability checks retain the same severity threshold and
+continue to include unfixed advisories. The runtime retains its package metadata
+for scanning and does not contain pip or development dependencies.
+
+Alpine uses musl rather than glibc. Native Python dependencies must install and
+pass the offline test suite in the Alpine test stage; a successful host Python
+test run alone is insufficient. Container smoke checks also verify non-root
+persistence, migrations, SQLite backup/restore, timezone data and TLS trust roots.
+Revalidate these checks and the image scan when changing the base digest.
+
 ## Release eligibility
 
 The release workflow is manual-only, requires the `main` branch and the explicit

@@ -53,6 +53,10 @@ jobs:
       - run: docker build --tag bite-club:ci .
       - name: Non-root container and offline migration smoke test
         run: bash scripts/container-smoke.sh bite-club:ci
+      - name: Offline application suite on the runtime distribution
+        run: |
+          docker build --target test --tag bite-club:test .
+          docker run --rm --network none --read-only --tmpfs /tmp --cpus 2 --memory 1g bite-club:test
       - name: Compose validation with placeholders only
         env:
           BOT_ENV_FILE: .env.example

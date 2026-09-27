@@ -57,7 +57,7 @@ jobs:
       - name: Scan the exact published digest before marking it eligible
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          version: v0.70.0
+          version: v0.74.0
           image-ref: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           scanners: vuln
           severity: HIGH,CRITICAL
