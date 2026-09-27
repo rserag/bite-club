@@ -1,0 +1,10 @@
+title = "Bite Club: default secret rules with exact synthetic-fixture exceptions"
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Explicitly synthetic Telegram credentials used by offline fixtures and demo"
+condition = "AND"
+paths = ['''^(tests/|tools/telegram_e2e/tests/|scripts/demo\.py$|scripts/audit_publication\.py$)''']
+regexTarget = "match"
+regexes = ['''(?:123456|678901):synthetic_token_for_offline_tests_only''']

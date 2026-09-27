@@ -1,0 +1,1 @@
+"""External nutrition data adapters."""

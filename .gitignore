@@ -1,0 +1,61 @@
+# Personal planning inputs and runtime data must not enter the public repository.
+private/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.db
+*-wal
+*-shm
+backups/
+exports/
+logs/
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+runtime-data/
+*.lock.tmp
+build/
+dist/
+*.egg-info/
+
+.DS_Store
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/
+
+# Telegram user authentication must never enter source or image contexts.
+*.session
+*.session-*
+
+# Local execution history, agent configuration and development databases.
+.beads/
+.agents/
+.codex/
+.doltcfg/
+/config.yaml
+
+# Keys, archives and local reports are never public source.
+*.pem
+*.key
+*.p12
+*.pfx
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.log
+*.bak
+*.sqlite-journal
+*.sqlite3-journal
+*.db-journal
+/reports/

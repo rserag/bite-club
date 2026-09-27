@@ -1,0 +1,90 @@
+{
+  "manifest_version": "2026-09-22.1",
+  "protocols": [
+    {
+      "code": "creatine_monohydrate_adult",
+      "substance_code": "creatine_monohydrate",
+      "title": "Creatine monohydrate",
+      "population": "adult; suitability not established by this template",
+      "loading_optional": true,
+      "timing_statement": "No workout-relative timing advantage is treated as established; use a convenient routine anchor.",
+      "missed_dose_statement": "Absence remains unconfirmed. An explicitly skipped dose never causes automatic doubling, phase extension or re-loading.",
+      "options": [
+        {
+          "code": "steady",
+          "title": "Maintenance only",
+          "phases": [
+            {
+              "code": "maintenance",
+              "duration_days_min": null,
+              "duration_days_max": null,
+              "daily_amount_mg_min": 3000,
+              "daily_amount_mg_max": 5000,
+              "mg_per_kg": null,
+              "frequency": 1,
+              "per_serving_mg": null
+            }
+          ]
+        },
+        {
+          "code": "fixed_loading",
+          "title": "Fixed loading then maintenance",
+          "phases": [
+            {
+              "code": "loading",
+              "duration_days_min": 5,
+              "duration_days_max": 7,
+              "daily_amount_mg_min": 20000,
+              "daily_amount_mg_max": 20000,
+              "mg_per_kg": null,
+              "frequency": 4,
+              "per_serving_mg": 5000
+            },
+            {
+              "code": "maintenance",
+              "duration_days_min": null,
+              "duration_days_max": null,
+              "daily_amount_mg_min": 3000,
+              "daily_amount_mg_max": 5000,
+              "mg_per_kg": null,
+              "frequency": 1,
+              "per_serving_mg": null
+            }
+          ]
+        },
+        {
+          "code": "weight_loading",
+          "title": "Weight-based loading then maintenance",
+          "phases": [
+            {
+              "code": "loading",
+              "duration_days_min": 5,
+              "duration_days_max": 7,
+              "daily_amount_mg_min": null,
+              "daily_amount_mg_max": null,
+              "mg_per_kg": 300,
+              "frequency": 4,
+              "per_serving_mg": null
+            },
+            {
+              "code": "maintenance",
+              "duration_days_min": null,
+              "duration_days_max": null,
+              "daily_amount_mg_min": 3000,
+              "daily_amount_mg_max": 5000,
+              "mg_per_kg": null,
+              "frequency": 1,
+              "per_serving_mg": null
+            }
+          ]
+        }
+      ],
+      "sources": [
+        "https://ods.od.nih.gov/factsheets/ExerciseAndAthleticPerformance-HealthProfessional/",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC5867441/",
+        "https://pubmed.ncbi.nlm.nih.gov/8828669/",
+        "https://pubmed.ncbi.nlm.nih.gov/34445003/"
+      ]
+    }
+  ]
+}

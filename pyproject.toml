@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nutrition-bot"
+version = "0.1.0"
+description = "Bite Club: a self-hosted Telegram food, training and recovery diary"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "aiogram>=3.20,<4",
+  "aiosqlite>=0.21,<1",
+  "alembic>=1.16,<2",
+  "httpx>=0.28,<0.29",
+  "pydantic-settings>=2.9,<3",
+  "sqlalchemy[asyncio]>=2.0.40,<2.1",
+  "tzdata>=2025.2",
+]
+
+[project.scripts]
+nutrition-bot = "nutrition_bot.cli:main"
+
+[project.urls]
+Repository = "https://github.com/rserag/bite-club"
+Issues = "https://github.com/rserag/bite-club/issues"
+
+[dependency-groups]
+dev = ["pytest>=8.3,<10", "pytest-asyncio>=1,<2", "ruff>=0.11,<1", "mypy>=1.15,<2"]
+e2e = [
+    "telethon>=1.45,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nutrition_bot"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "nutrition_bot/migrations"
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/", "/migrations/", "/tests/", "/tools/", "/scripts/", "/docs/", "/evals/", "/pyproject.toml", "/uv.lock", "/README.md", "/LICENSE", "/THIRD_PARTY_NOTICES.md", "/alembic.ini"]
+exclude = ["/.beads/", "/.agents/", "/.codex/", "/private/", "/runtime-data/"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+plugins = ["pydantic.mypy"]
+python_version = "3.13"
+strict = true
+files = ["src/nutrition_bot", "tools/telegram_e2e"]
+exclude = ["tools/telegram_e2e/tests/"]
+
+[[tool.mypy.overrides]]
+module = ["telethon", "telethon.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error"]

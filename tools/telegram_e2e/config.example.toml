@@ -1,0 +1,20 @@
+# Copy to private/telegram-e2e/config.toml; directory mode 0700, file mode 0600.
+# Never use the real diary bot: live runs consume pending updates and log synthetic meals.
+dedicated_test_bot = false # Set true only for a dedicated disposable-data test bot.
+
+# User-client application credentials from https://my.telegram.org/apps (not BotFather).
+api_id = 0 # Positive numeric API ID.
+api_hash = "REPLACE_WITH_API_HASH" # 32-character API hash.
+
+# Create a separate test bot with Telegram's verified @BotFather (/newbot).
+bot_token = "REPLACE_WITH_TEST_BOT_TOKEN"
+bot_id = 0 # Numeric prefix of bot_token before the colon.
+bot_username = "REPLACE_WITH_TEST_BOT_USERNAME" # Without @.
+
+# Real user's numeric ID. Leave 0 for initial login, then set to the ID it prints locally.
+# Prefer a dedicated Telegram account. This becomes the test bot's private-chat allowlist.
+user_id = 0
+step_timeout = 30 # Seconds: allowed 5–60.
+pace_seconds = 1.2 # Between actions: allowed 1–10.
+
+# Phone number, login code and two-step password are entered interactively, never saved here.
