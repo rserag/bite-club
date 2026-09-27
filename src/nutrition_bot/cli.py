@@ -163,6 +163,12 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("run", "migrate", "healthcheck", "retry-replies"):
         commands.add_parser(name)
+    backup = commands.add_parser("backup", help="Create a private, consistent local snapshot")
+    backup.add_argument("--output", type=Path, required=True)
+    backup.add_argument("--image-digest", required=True)
+    backup.add_argument("--media-root", type=Path)
+    restore = commands.add_parser("restore-check", help="Verify a snapshot without network sends")
+    restore.add_argument("--input", type=Path, required=True)
     manual = commands.add_parser("food-import", help="Preview or save a reviewed food JSON file")
     manual.add_argument("--input-file", type=Path, required=True)
     manual.add_argument("--reviewed", action="store_true")
@@ -191,7 +197,24 @@ def main() -> None:
     os.umask(0o077)
     configure_logging("INFO")
     try:
-        if args.command == "run":
+        if args.command == "backup":
+            from nutrition_bot.runtime.backup import snapshot
+
+            result = snapshot(
+                StorageSettings().database_path,
+                args.output,
+                args.image_digest,
+                media_root=args.media_root,
+            )
+            print(
+                json.dumps({"status": "local_snapshot_verified", "schema": result.schema_revision})
+            )
+        elif args.command == "restore-check":
+            from nutrition_bot.runtime.backup import verify_snapshot
+
+            result = verify_snapshot(args.input)
+            print(json.dumps({"status": "snapshot_verified", "schema": result.schema_revision}))
+        elif args.command == "run":
             settings = BotSettings()
             configure_logging(settings.log_level)
             with database_lock(settings.database_path):

@@ -1,5 +1,5 @@
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 import sqlalchemy as sa
@@ -43,6 +43,7 @@ class TargetPlanSnapshot:
     energy_range_low_kcal: int | None
     energy_range_high_kcal: int | None
     source: str
+    allocation_id: int | None = None
 
 
 def _proposal(row: sa.RowMapping) -> ProposalSnapshot:
@@ -145,6 +146,13 @@ async def apply_proposal(
         return proposal, _plan(existing)
     if proposal.state != "open":
         raise GoalStoreError("That proposal was cancelled. Create a new one with /goal.")
+    from nutrition_bot.adapters.database.allocations import target_change_blocked
+
+    if await target_change_blocked(connection, effective_from):
+        raise GoalStoreError(
+            "An approved training allocation overlaps future targets. Cancel its future week "
+            "with /allocation first, or wait until an already-started week finishes."
+        )
     await connection.execute(
         sa.update(goals)
         .where(goals.c.active_slot == 1)
@@ -211,7 +219,9 @@ async def cancel_proposal(
     return await get_proposal(connection, proposal_id)
 
 
-async def current_plan(connection: AsyncConnection, *, on_date: date) -> TargetPlanSnapshot | None:
+async def current_plan(
+    connection: AsyncConnection, *, on_date: date, include_allocation: bool = True
+) -> TargetPlanSnapshot | None:
     row = (
         (
             await connection.execute(
@@ -224,4 +234,30 @@ async def current_plan(connection: AsyncConnection, *, on_date: date) -> TargetP
         .mappings()
         .one_or_none()
     )
-    return _plan(row) if row is not None else None
+    if row is None:
+        return None
+    plan = _plan(row)
+    if not include_allocation:
+        return plan
+    from nutrition_bot.adapters.database.allocations import active_allocation
+
+    allocation = await active_allocation(connection, on_date)
+    if allocation is None or allocation["base_plan_id"] != plan.id:
+        return plan
+    delta = allocation["deltas"][(on_date - allocation["week_start"]).days]
+    return replace(
+        plan,
+        energy_kcal=plan.energy_kcal + delta,
+        carbohydrate_grams=plan.carbohydrate_grams + delta // 4,
+        energy_range_low_kcal=(
+            max(1, plan.energy_range_low_kcal + delta)
+            if plan.energy_range_low_kcal is not None
+            else None
+        ),
+        energy_range_high_kcal=(
+            min(10000, plan.energy_range_high_kcal + delta)
+            if plan.energy_range_high_kcal is not None
+            else None
+        ),
+        allocation_id=allocation["id"],
+    )

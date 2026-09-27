@@ -42,7 +42,7 @@ Completed inbox payloads and sent/failed reply content are scrubbed after 30 day
 
 The data directory, populated environment files, private onboarding notes, logs, exports, and backups are excluded from Git/build context. The container copies only package/build inputs. Source distributions use an explicit file allowlist and wheels include migrations. Logs emit event names/error classes, not exception messages, tokens, user input, or provider payloads.
 
-There is no automatic backup/restore implementation yet. Do not start collecting important personal history with this foundation as if the full recovery requirements were complete. The explicit `migrate` command applies the current schema; production rollback and off-site restore drills belong to T11/T12.
+Operator-run consistent snapshots, encrypted restic upload/retention, and isolated restore verification are available in the [backup guide](backup-and-restore.md). Automatic scheduling and verified off-site recovery remain incomplete. The explicit `migrate` command applies the current schema; production rollback and off-site restore drills belong to T11/T12.
 
 ## Verification boundaries
 

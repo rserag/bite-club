@@ -1,6 +1,8 @@
 private/
 .git/
 .beads/
+.dolt/
+.beads-credential-key
 .agents/
 .codex/
 .env

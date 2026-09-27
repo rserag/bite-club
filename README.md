@@ -43,10 +43,13 @@ The demo exercises the actual application service with **synthetic food values**
 - **Approval workflow:** persistent rough-portion drafts, version-specific approval, expiry and safe handling of stale buttons or edited messages.
 - **Goals and trends:** reviewed calorie/macro targets, weight history, daily/weekly reports and evidence-gated adjustment proposals.
 - **Training and recovery:** gym/BJJ sessions and details, plans, recovery check-ins and coverage-aware workload reporting.
+- **Training-day allocation:** an explicitly reviewed future week redistributes calories/carbohydrates without changing the weekly budget, protein or fat. Unknown days retain baseline targets.
 - **Supplements:** reviewed creatine products, actual intake, phased regimens, dose marks and separate exposure/adherence reports. General nutrient-product entry is not yet available in Telegram.
 - **Nutrient review:** versioned adult DRI references, explicit group selection, food/supplement separation, source-specific limits and conservative two-week intake screening.
 
-Next increments include training-day allocation, verified-food suggestions, reminders, optional AI/photo interpretation, exports and automatic encrypted backups. Planned behavior is documented separately from implemented behavior. No paid AI integration is active.
+Next increments include verified-food suggestions, reminders, optional AI/photo interpretation, exports and automatic encrypted backups. Planned behavior is documented separately from implemented behavior. No paid AI integration is active.
+
+Operator-run [backup and restore tools](docs/backup-and-restore.md) provide consistent SQLite snapshots, encrypted restic upload/retention, and isolated restore verification. Scheduling and an actual off-site recovery drill remain separate work.
 
 ## How it fits together
 

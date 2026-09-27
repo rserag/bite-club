@@ -406,6 +406,10 @@ async def resolve_proposal(
         return await get_adaptive_proposal(connection, proposal.id), None
     if action != "apply":
         raise AdaptiveError("Choose Apply or Keep target.")
+    from nutrition_bot.adapters.database.allocations import target_change_blocked
+
+    if await target_change_blocked(connection, effective_from):
+        raise AdaptiveError("An approved training allocation must finish or be cancelled first.")
     from nutrition_bot.adapters.database.supplement_plans import has_weight_context
 
     if await has_weight_context(connection, effective_from - timedelta(days=1)):
