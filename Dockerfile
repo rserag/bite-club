@@ -1,4 +1,4 @@
-FROM python:3.13-alpine3.24@sha256:79e7a9b9ff1cbceff819f856fb374477792a5967759d94df266de7b7b4120e6f AS build
+FROM python:3.14-alpine3.24@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01 AS build
 ENV UV_NO_CACHE=1 UV_LINK_MODE=copy \
     UV_CONCURRENT_DOWNLOADS=2 UV_CONCURRENT_BUILDS=1 UV_CONCURRENT_INSTALLS=1
 WORKDIR /app
@@ -15,7 +15,7 @@ COPY scripts ./scripts
 ENV PYTHONDONTWRITEBYTECODE=1
 CMD ["/app/.venv/bin/pytest", "-q", "-p", "no:cacheprovider"]
 
-FROM python:3.13-alpine3.24@sha256:79e7a9b9ff1cbceff819f856fb374477792a5967759d94df266de7b7b4120e6f AS runtime
+FROM python:3.14-alpine3.24@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01 AS runtime
 RUN python -m pip uninstall --yes pip \
     && addgroup -g 10001 bot && adduser -D -H -u 10001 -G bot bot \
     && mkdir /data && chown bot:bot /data
