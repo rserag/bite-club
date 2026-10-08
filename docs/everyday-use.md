@@ -42,6 +42,8 @@ OpenRouter route. AI interprets meals into reviewed drafts, using existing food
 sources; it never supplies authoritative nutrition values or approves a meal.
 Live activation requires credentials, the reviewed privacy policy and appropriate
 evaluation evidence. Manual logging and reports work while AI is disabled.
+The [AI user guide](ai-user-guide.md) explains how to describe a meal, review the
+current draft, correct it and handle clarification or limits.
 
 [Mini App setup](mini-app.md) covers the authenticated food browser, dashboard,
 meal history and measured-portion forms. Estimate approval stays in the Telegram

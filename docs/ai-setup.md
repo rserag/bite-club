@@ -1,5 +1,9 @@
 # Optional AI meal drafts
 
+For day-to-day logging, see the [AI user guide](ai-user-guide.md). Operators can
+review the private [AI efficiency measurements](ai-measurements.md) after two or
+three days of ordinary use.
+
 Local measured logging, favorites, recipes and reports continue to work without an AI provider. External interpretation is disabled until its own credentials and current policy configuration are present. No shared Codex credential file is read, no credits are purchased, and no paid evaluation runs in CI.
 
 AI interprets unfamiliar meal wording or one meal photo into a proposal using reviewed local food identities. Unknown foods, preparation ambiguity and unaccounted-for ingredients produce clarification rather than a partial saved meal. Models cannot return nutrient values, database queries or executable actions. Authoritative nutrition still comes from immutable reviewed food versions and deterministic calculations. Every AI proposal requires the current displayed draft's approval button, including after quantities are edited into measured amounts. Old buttons and text replies cannot approve a new revision.
