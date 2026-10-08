@@ -10,6 +10,7 @@ from nutrition_bot.adapters.database.schema import inbox, outbox
 from nutrition_bot.adapters.database.schema_drafts import draft_action_links
 from nutrition_bot.domain.food import PortionInput
 from tests.helpers import message
+from tests.test_draft_presentation import process_parts
 from tests.test_telegram_drafts import age_draft, draft, press
 from tests.test_telegram_meals import catalog as catalog
 from tests.test_telegram_meals import current, food_record, ledger_counts, process, reply
@@ -120,7 +121,7 @@ async def test_date_edit_invalidates_old_approval_and_uses_displayed_day(service
     assert saved.items[0].approval_draft_revision == 2
 
 
-async def test_ten_long_unicode_foods_fit_preview_and_approved_receipt(service, store):
+async def test_ten_long_unicode_foods_are_fully_delivered_before_approval(service, store):
     record = food_record("😀" * 500).model_copy(
         update={
             "portions": (
@@ -135,9 +136,13 @@ async def test_ten_long_unicode_foods_fit_preview_and_approved_receipt(service, 
     )
     async with store.write() as connection:
         food = await publish_reviewed_food(connection, record)
-    first = await process(service, store, message(1, "; ".join([f"#{food.version_id}"] * 10)))
+    first, preview_parts = await process_parts(
+        service, store, message(1, "; ".join([f"#{food.version_id}"] * 10))
+    )
     assert first["payload"]["draft_id"] == 1
-    assert len(first["payload"]["text"].encode("utf-16-le")) // 2 < 4096
-    approved = await process(service, store, press(first))
-    assert len(approved["payload"]["text"].encode("utf-16-le")) // 2 < 4096
+    assert len(preview_parts) > 1
+    assert "".join(part["payload"]["text"] for part in preview_parts).count("😀" * 500) == 10
+    approved, saved_parts = await process_parts(service, store, press(first))
+    assert approved["payload"]["meal_id"] == 1
+    assert "".join(part["payload"]["text"] for part in saved_parts).count("😀" * 500) == 10
     assert len((await current(store)).items) == 10

@@ -99,11 +99,15 @@ async def test_short_report_is_available_on_request_and_links_to_full_report(
     full_text = report_text(full_result)
     assert "Energy: 550 kcal" in short_text
     assert "Protein: 55.0 g" in short_text
-    assert "Fiber: 1.5 g known" in short_text
+    assert "Fiber: 1.5 g · partial sum" in short_text
     assert "data 1/2 foods" in short_text
     assert "Calcium:" not in short_text
     assert "/today" in short_text
     assert "Calcium:" in full_text
+    assert "Food sources" not in short_text
+    assert "Portions (entries)" not in short_text
+    assert "Date requested" not in short_text
+    assert "Have you logged everything eaten on 2023-11-14?" in short_text
     assert len(short_text) < len(full_text)
     assert await ledger_counts(store) == (1, 1)
 

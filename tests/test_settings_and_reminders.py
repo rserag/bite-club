@@ -641,7 +641,7 @@ async def test_sender_refreshes_summary_from_current_diary_state(store, settings
             .mappings()
             .one()
         )
-    assert "complete · explicitly marked all food logged" in refreshed["payload"]["text"]
+    assert "All food logged for this date" in refreshed["payload"]["text"]
 
 
 async def test_telegram_settings_flow_is_authorized_idempotent_and_history_safe(
@@ -839,4 +839,4 @@ async def test_worker_refreshes_current_summary_between_claim_and_send(
 
     gateway = CheckingGateway()
     assert await send_one(service, gateway)
-    assert "complete · explicitly marked all food logged" in gateway.messages[0][1]
+    assert "All food logged for this date" in gateway.messages[0][1]

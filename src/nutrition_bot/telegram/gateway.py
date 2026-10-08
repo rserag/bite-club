@@ -23,6 +23,53 @@ from aiogram.types import (
 )
 
 
+def split_message(text: str, *, limit: int = 4032) -> tuple[str, ...]:
+    """Split plain Telegram text without discarding data or splitting surrogate pairs.
+
+    Reserve room for the part heading added by the durable outbox. Prefer complete
+    lines, but full source names and provenance may themselves exceed one message.
+    """
+    if limit < 2:
+        raise ValueError("A message must accommodate a Unicode character")
+    parts: list[str] = []
+    start = size = 0
+    last_break: int | None = None
+    position = 0
+    while position < len(text):
+        width = 2 if ord(text[position]) > 0xFFFF else 1
+        if size + width > limit:
+            end = last_break if last_break is not None else position
+            parts.append(text[start:end])
+            start = position = end
+            size = 0
+            last_break = None
+            continue
+        size += width
+        position += 1
+        if text[position - 1] == "\n":
+            last_break = position
+    parts.append(text[start:])
+    return tuple(parts)
+
+
+def keyboard_rows(buttons: list[dict[str, str]]) -> list[list[InlineKeyboardButton]]:
+    """Respect intentional action groups; older payloads retain their original layout."""
+    if all("row" in button for button in buttons):
+        rows: dict[str, list[InlineKeyboardButton]] = {}
+        for item in buttons:
+            rows.setdefault(item["row"], []).append(
+                InlineKeyboardButton(text=item["text"], callback_data=item["callback_data"])
+            )
+        return [rows[key] for key in sorted(rows, key=int)]
+    return [
+        [
+            InlineKeyboardButton(text=item["text"], callback_data=item["callback_data"])
+            for item in buttons[start : start + 3]
+        ]
+        for start in range(0, len(buttons), 3)
+    ]
+
+
 class RetryableError(Exception):
     def __init__(self, delay: float = 0):
         self.delay = delay
@@ -133,15 +180,7 @@ class TelegramGateway:
     ) -> int:
         keyboard = None
         if buttons is not None:
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text=item["text"], callback_data=item["callback_data"])
-                        for item in buttons[start : start + 3]
-                    ]
-                    for start in range(0, len(buttons), 3)
-                ]
-            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows(buttons))
         elif button_token:
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[

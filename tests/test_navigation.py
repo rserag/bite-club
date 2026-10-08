@@ -42,7 +42,7 @@ async def test_start_help_topics_are_short_and_home_is_clickable(service, store)
 
 async def guided(service, store, catalog, *, rough=False):
     home = await process(service, store, message(1, "/home"))
-    await process(service, store, tap(home, "Log meal", 2))
+    await process(service, store, tap(home, "Log food", 2))
     choices = await process(service, store, message(3, "rice"))
     select = choices["payload"]["buttons"][0]["text"]
     await process(service, store, tap(choices, select, 4))
@@ -71,7 +71,7 @@ async def test_old_save_button_cannot_save_reopened_guided_flow(service, store, 
     review = await guided(service, store, catalog)
     await process(service, store, message(6, "/cancel"))
     home = await process(service, store, message(7, "/home"))
-    await process(service, store, tap(home, "Log meal", 8))
+    await process(service, store, tap(home, "Log food", 8))
     choices = await process(service, store, message(9, "chicken"))
     await process(service, store, tap(choices, choices["payload"]["buttons"][0]["text"], 10))
     await process(service, store, message(11, "200 g"))
@@ -84,7 +84,7 @@ async def test_guided_flow_survives_new_service_and_expires_without_saving(
     service, store, settings, catalog
 ):
     home = await process(service, store, message(1, "/home"))
-    await process(service, store, tap(home, "Log meal", 2))
+    await process(service, store, tap(home, "Log food", 2))
     restarted = Service(store, settings)
     choices = await process(restarted, store, message(3, "rice"))
     assert "Choose the exact" in choices["payload"]["text"]
@@ -99,24 +99,25 @@ async def test_guided_flow_survives_new_service_and_expires_without_saving(
 
 async def test_receipt_repeat_save_and_edit_keep_current_revision(service, store, catalog):
     saved = await process(service, store, message(1, "150g rice"))
-    favorite_prompt = await process(service, store, tap(saved, "Save favorite", 2))
+    more = await process(service, store, tap(saved, "More", 2))
+    favorite_prompt = await process(service, store, tap(more, "Save favorite", 3))
     assert "name" in favorite_prompt["payload"]["text"]
-    named = await process(service, store, message(3, "usual breakfast"))
+    named = await process(service, store, message(4, "usual breakfast"))
     assert "Saved favorite" in named["payload"]["text"]
-    repeated = await process(service, store, tap(saved, "Repeat", 4))
+    repeated = await process(service, store, tap(saved, "Log again", 5))
     assert "Saved" in repeated["payload"]["text"]
     assert await ledger_counts(store) == (2, 2)
-    await process(service, store, tap(saved, "Edit", 5))
-    edit = await process(service, store, message(6, "item 1: 120g"))
+    await process(service, store, tap(saved, "Edit", 6))
+    edit = await process(service, store, message(7, "item 1: 120g"))
     assert "120" in edit["payload"]["text"]
-    stale = await process(service, store, tap(saved, "Repeat", 7))
+    stale = await process(service, store, tap(saved, "Log again", 8))
     assert "has changed" in stale["payload"]["text"]
     assert await ledger_counts(store) == (2, 3)
 
 
 async def test_forged_navigation_action_is_rejected_without_flow(service, store):
     home = await process(service, store, message(1, "/home"))
-    update = tap(home, "Log meal", 2).model_dump(mode="json", exclude_none=True)
+    update = tap(home, "Log food", 2).model_dump(mode="json", exclude_none=True)
     update["callback_query"]["data"] = f"ui:99:{home['button_token']}"
     assert await process(service, store, Update.model_validate(update)) is None
     async with store.engine.connect() as connection:
@@ -178,12 +179,12 @@ async def test_guided_ten_food_review_is_bounded_and_keeps_save(service, store, 
 
 async def test_same_repeat_receipt_does_not_duplicate_distinct_taps(service, store, catalog):
     saved = await process(service, store, message(1, "150g rice"))
-    repeated = await process(service, store, tap(saved, "Repeat", 2))
+    repeated = await process(service, store, tap(saved, "Log again", 2))
     assert "Saved" in repeated["payload"]["text"]
-    second = await process(service, store, tap(saved, "Repeat", 3))
+    second = await process(service, store, tap(saved, "Log again", 3))
     assert "Nothing was changed" in second["payload"]["text"]
     assert await ledger_counts(store) == (2, 2)
-    fresh_intent = await process(service, store, tap(repeated, "Repeat", 4))
+    fresh_intent = await process(service, store, tap(repeated, "Log again", 4))
     assert "Saved" in fresh_intent["payload"]["text"]
     assert await ledger_counts(store) == (3, 3)
 
@@ -191,14 +192,14 @@ async def test_same_repeat_receipt_does_not_duplicate_distinct_taps(service, sto
 async def test_new_repeat_receipt_needs_fresh_estimate_approval(service, store, catalog):
     draft = await process(service, store, message(1, "about 150g rice"))
     saved = await process(service, store, approve_draft(draft, update_id=2))
-    repeated = await process(service, store, tap(saved, "Repeat", 3))
+    repeated = await process(service, store, tap(saved, "Log again", 3))
     assert repeated["payload"]["draft_id"] != draft["payload"]["draft_id"]
     assert await ledger_counts(store) == (1, 1)
-    duplicate = await process(service, store, tap(saved, "Repeat", 4))
+    duplicate = await process(service, store, tap(saved, "Log again", 4))
     assert "Nothing was changed" in duplicate["payload"]["text"]
     approved_repeat = await process(service, store, approve_draft(repeated, update_id=5))
     assert await ledger_counts(store) == (2, 2)
-    next_repeat = await process(service, store, tap(approved_repeat, "Repeat", 6))
+    next_repeat = await process(service, store, tap(approved_repeat, "Log again", 6))
     assert next_repeat["payload"]["draft_id"] not in {
         draft["payload"]["draft_id"],
         repeated["payload"]["draft_id"],

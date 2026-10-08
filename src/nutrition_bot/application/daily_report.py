@@ -104,22 +104,39 @@ def _nutrient_line(nutrient: DailyNutrient) -> str:
     return f"{prefix}{_amount(nutrient)} {nutrient.unit}{suffix} · {coverage}"
 
 
+def _completion_lines(day: date, status: FoodDayStatus) -> list[str]:
+    if status.state == "complete":
+        return ["All food logged for this date."]
+    lines = []
+    if status.state == "incomplete":
+        lines.append("Not all food logged for this date.")
+    if status.changed_since_complete:
+        lines.append("Food log changed after it was marked all food logged; check it again.")
+    if status.unresolved_drafts:
+        lines.append(
+            f"{status.unresolved_drafts} unresolved meal draft(s) are outside these totals. "
+            "Resolve or cancel them before marking all food logged."
+        )
+    lines.append(f"Have you logged everything eaten on {day.isoformat()}?")
+    return lines
+
+
+def _remaining(nutrient: DailyNutrient, target_value: int) -> str:
+    if nutrient.known_amount_scaled is None or nutrient.known_items != nutrient.total_items:
+        return "unknown"
+    consumed = Decimal(nutrient.known_amount_scaled) / NUTRIENT_SCALE
+    difference = Decimal(target_value) - consumed
+    step = Decimal("1" if nutrient.code == "energy" else "0.1")
+    amount = abs(difference).quantize(step, rounding=ROUND_HALF_UP)
+    return f"{format(amount, 'f')} {nutrient.unit} " + ("remaining" if difference >= 0 else "over")
+
+
 def _target_lines(
     totals: DailyTotals,
     target: TargetPlanSnapshot | None,
     status: FoodDayStatus,
 ) -> list[str]:
-    if status.state == "complete":
-        state = "complete · explicitly marked all food logged"
-    elif status.state == "incomplete":
-        state = "incomplete · excluded from complete-day averages"
-    elif status.unresolved_drafts:
-        state = f"unknown · {status.unresolved_drafts} unresolved meal draft(s)"
-    elif status.changed_since_complete:
-        state = "unknown · food log changed after the complete marker"
-    else:
-        state = "unknown · choose All food logged or Incomplete"
-    lines = [f"Food log status: {state}."]
+    lines: list[str] = []
     if target is None:
         lines.append("No calorie or macro target was effective on this date.")
         return lines
@@ -149,11 +166,11 @@ def _target_lines(
         return lines
     nutrients = {nutrient.code: nutrient for nutrient in totals.nutrients}
     values: list[str] = []
-    for code, label, target_value, unit in (
-        ("energy", "Energy", target.energy_kcal, "kcal"),
-        ("protein", "P", target.protein_grams, "g"),
-        ("fat", "F", target.fat_grams, "g"),
-        ("carbohydrate", "C", target.carbohydrate_grams, "g"),
+    for code, label, target_value in (
+        ("energy", "Energy", target.energy_kcal),
+        ("protein", "P", target.protein_grams),
+        ("fat", "F", target.fat_grams),
+        ("carbohydrate", "C", target.carbohydrate_grams),
     ):
         nutrient = nutrients.get(code)
         if (
@@ -163,20 +180,105 @@ def _target_lines(
         ):
             values.append(f"{label} unknown")
             continue
-        consumed = Decimal(nutrient.known_amount_scaled) / NUTRIENT_SCALE
-        difference = Decimal(target_value) - consumed
-        step = Decimal("1" if code == "energy" else "0.1")
-        amount = abs(difference).quantize(step, rounding=ROUND_HALF_UP)
-        values.append(
-            f"{label} {format(amount, 'f')} {unit} remaining"
-            if difference >= 0
-            else f"{label} {format(amount, 'f')} {unit} over"
-        )
+        values.append(f"{label} {_remaining(nutrient, target_value)}")
     lines.append("From recorded foods: " + " · ".join(values) + ".")
     if status.state != "complete":
         lines.append("These are provisional because the day is not marked complete.")
     lines.append("Training does not add calories back to this target.")
     return lines
+
+
+def _short_nutrient_line(
+    nutrient: DailyNutrient,
+    *,
+    target_value: int | None,
+    withhold_remaining: bool,
+) -> str:
+    amount = (
+        "unknown"
+        if nutrient.known_amount_scaled is None
+        else f"{_amount(nutrient)} {nutrient.unit}"
+    )
+    if target_value is not None:
+        amount += f" / {target_value} {nutrient.unit} target"
+    if nutrient.missing_items:
+        kind = "" if nutrient.known_amount_scaled is None else "partial sum, "
+        amount += f" · {kind}data {nutrient.known_items}/{nutrient.total_items} foods"
+    if target_value is not None and not withhold_remaining:
+        remaining = _remaining(nutrient, target_value)
+        amount += " · remaining unknown" if remaining == "unknown" else f" · {remaining}"
+    return f"{_label(nutrient.name)}: {amount}"
+
+
+def _render_short(
+    totals: DailyTotals, target: TargetPlanSnapshot | None, status: FoodDayStatus
+) -> str:
+    lines = [f"Daily food log · {totals.local_date.isoformat()}", ""]
+    estimated = any(
+        method == "approved_estimate" and count for method, count in totals.quantity_counts
+    )
+    if not totals.item_count:
+        lines.append(
+            "No meals logged; explicitly marked complete, so recorded intake is zero."
+            if status.state == "complete"
+            else "No meals logged for this date. Intake is unknown, not zero."
+        )
+        if target:
+            lines.append(
+                f"Target: {target.energy_kcal} kcal · P {target.protein_grams} g · "
+                f"C {target.carbohydrate_grams} g · F {target.fat_grams} g."
+            )
+            if status.unresolved_drafts:
+                lines.append(
+                    "Remaining targets withheld until unresolved meal drafts are resolved "
+                    "or cancelled."
+                )
+            elif status.state != "complete":
+                lines.append(
+                    "Remaining targets withheld because recorded intake is unknown, not zero."
+                )
+            else:
+                lines.append(
+                    f"From recorded foods: Energy {target.energy_kcal} kcal remaining · "
+                    f"P {target.protein_grams}.0 g remaining · "
+                    f"C {target.carbohydrate_grams}.0 g remaining · "
+                    f"F {target.fat_grams}.0 g remaining."
+                )
+    else:
+        lines.append(
+            "Recorded nutrition · approximate portions" if estimated else "Recorded nutrition"
+        )
+        targets = (
+            {
+                "energy": target.energy_kcal,
+                "protein": target.protein_grams,
+                "carbohydrate": target.carbohydrate_grams,
+                "fat": target.fat_grams,
+            }
+            if target
+            else {}
+        )
+        lines.extend(
+            _short_nutrient_line(
+                nutrient,
+                target_value=targets.get(nutrient.code),
+                withhold_remaining=bool(status.unresolved_drafts),
+            )
+            for nutrient in totals.nutrients
+            if nutrient.code in MACROS
+        )
+        if target and status.unresolved_drafts:
+            lines.append(
+                "Remaining targets withheld until unresolved meal drafts are resolved or cancelled."
+            )
+        elif target and status.state != "complete":
+            lines.append("Progress is provisional until all food is logged.")
+    if target and target.allocation_id is not None:
+        lines.append("Approved training-day target; weekly calories unchanged.")
+    lines.append("")
+    lines.extend(_completion_lines(totals.local_date, status))
+    lines.append(f"Details: /today {totals.local_date.isoformat()} full")
+    return "\n".join(lines)
 
 
 def _counts(counts: tuple[tuple[str, int], ...], names: dict[str, str]) -> str:
@@ -190,7 +292,6 @@ def _render_daily(
     totals: DailyTotals,
     *,
     timezone: str,
-    short: bool,
     nutrient_limit: int,
     meal_limit: int,
     target: TargetPlanSnapshot | None,
@@ -206,9 +307,10 @@ def _render_daily(
         )
         lines.append("Find a saved food with /foods, then log a measured amount.")
         lines.extend(_target_lines(totals, target, status))
+        lines.extend(_completion_lines(totals.local_date, status))
         return "\n".join(lines)
     lines.append(f"{len(totals.meals)} meals · {totals.item_count} food entries")
-    selected = tuple(n for n in totals.nutrients if not short or n.code in MACROS)
+    selected = totals.nutrients
     displayed = selected[:nutrient_limit]
     lines.extend(_nutrient_line(nutrient) for nutrient in displayed)
     if len(selected) > len(displayed):
@@ -232,28 +334,29 @@ def _render_daily(
         lines.append(
             "Includes approved portion estimates; their nutrient contributions are approximate."
         )
-    if not short:
-        quality_counts: Counter[str] = Counter()
-        for nutrient in totals.nutrients:
-            quality_counts.update(dict(nutrient.quality_counts))
-        if quality_counts:
-            lines.append(
-                "Known nutrient values: "
-                + _counts(tuple(sorted(quality_counts.items())), QUALITY_NAMES)
-                + ". These describe data origin, not lab measurements of your meal."
-            )
-        lines.append("Meals (open a receipt with /meal M<number>):")
-        lines.extend(
-            f"M{meal.id}r{meal.revision_number} · {_label(meal.label, 32)}"
-            for meal in totals.meals[:meal_limit]
+    quality_counts: Counter[str] = Counter()
+    for nutrient in totals.nutrients:
+        quality_counts.update(dict(nutrient.quality_counts))
+    if quality_counts:
+        lines.append(
+            "Known nutrient values: "
+            + _counts(tuple(sorted(quality_counts.items())), QUALITY_NAMES)
+            + ". These describe data origin, not lab measurements of your meal."
         )
-        if len(totals.meals) > meal_limit:
-            lines.append(f"+{len(totals.meals) - meal_limit} other meals included in every total.")
-        if any(zone != timezone for zone in totals.recorded_timezones):
-            lines.append("Some meals were recorded in another timezone; their dates are unchanged.")
+    lines.append("Meals (open a receipt with /meal M<number>):")
+    lines.extend(
+        f"M{meal.id}r{meal.revision_number} · {_label(meal.label, 32)}"
+        for meal in totals.meals[:meal_limit]
+    )
+    if len(totals.meals) > meal_limit:
+        lines.append(f"+{len(totals.meals) - meal_limit} other meals included in every total.")
+    if any(zone != timezone for zone in totals.recorded_timezones):
+        lines.append("Some meals were recorded in another timezone; their dates are unchanged.")
     lines.extend(_target_lines(totals, target, status))
+    lines.append("")
+    lines.extend(_completion_lines(totals.local_date, status))
     command = f"/today {totals.local_date.isoformat()}"
-    lines.append(f"Full report: {command} full" if short else f"Quick view: {command} short")
+    lines.append(f"Quick view: {command} short")
     return "\n".join(lines)
 
 
@@ -266,10 +369,11 @@ def render_daily(
     status: FoodDayStatus | None = None,
 ) -> str:
     status = status or FoodDayStatus("unknown", None, 0, False)
+    if short:
+        return _render_short(totals, target, status)
     result = _render_daily(
         totals,
         timezone=timezone,
-        short=short,
         nutrient_limit=20,
         meal_limit=5,
         target=target,
@@ -281,7 +385,6 @@ def render_daily(
         result = _render_daily(
             totals,
             timezone=timezone,
-            short=short,
             nutrient_limit=14,
             meal_limit=3,
             target=target,

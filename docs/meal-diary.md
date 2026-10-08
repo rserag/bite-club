@@ -31,7 +31,9 @@ The measured parser accepts g, kg and mg, including food-name-then-weight forms.
 
 “Three eggs” and “a cup of rice” still need clarification. “About 150g rice” creates an approval draft. An unweighed food with an exact catalog match creates a draft with either a clearly labelled local portion suggestion or an unresolved amount. Drafts stay outside totals. A weight written in grams never becomes measured merely because an estimate was expressed numerically.
 
-The receipt shows its meal/revision reference, local date, foods, weights, preparation and source-version numbers. Energy/macros/fiber are calculated from stored source values. Missing values are shown as unknown; partial totals show known contributions and the number of unknown items. Display rounding is coarser than the stored calculation.
+The compact receipt leads with the result, meal/revision reference, local date and energy/macros, followed by a numbered ingredient list. Food display names conservatively normalize whitespace, comma punctuation and repeated qualifiers while preserving cuts, fat content and preparation; they do not infer aliases or nutritional equivalence. Estimated portions remain labelled beside the summary and affected items. In mixed meals, measured items are labelled separately. Identical saved estimate bases are grouped by item number; draft approval remains fully itemized.
+
+**Details** contains the complete immutable source names, food/source identifiers, original quantity and unit, portion method, full estimate basis, approval references, recipe provenance and calculation identifiers. Fiber and missing source values remain visible there. Missing energy/macros are explicit in the compact summary; partial sums identify unknown items. Display rounding is coarser than the stored calculation. Long receipts, details and drafts are sent as ordered message parts with action buttons on the final part, after preceding parts have been delivered.
 
 ## Correct a receipt
 
@@ -51,7 +53,7 @@ Tap **Edit**, or reply directly to the latest meal receipt:
 
 For a one-item meal, replying `120g` is sufficient to change its weight. For multiple items, use an item number rather than an ambiguous quantity. Use a separate date correction instead of embedding a date or label in item replacement text; otherwise the request is rejected rather than partly applied.
 
-Delete and Undo are also inline buttons. Undoing the initial save marks the meal deleted. Undoing a deletion restores the prior exact snapshot. A completed undo cannot be undone repeatedly; use Edit for another correction. A deleted meal can be restored through an explicit replacement/edit. Every change produces a fresh receipt.
+**Log again** records another occurrence; estimated quantities require fresh draft approval. **More** contains Save favorite and Delete. Undo buttons describe their actual effect: **Undo save** removes an initial save, **Undo edit** restores the preceding correction, and **Restore meal** reverses deletion using the prior exact snapshot. A completed undo cannot be undone repeatedly; use Edit for another correction. A deleted meal can be restored through an explicit replacement/edit. Every change produces a fresh receipt.
 
 Use `/meals` to list the ten most recent meals, including deleted ones, and `/meal M7` to open the current receipt for meal 7. Explicit mutation commands require the revision in the reference:
 
@@ -78,7 +80,7 @@ show today's totals
 /today 2026-01-15 short
 ```
 
-The default full report shows energy, protein, carbohydrate, fat, fiber, sodium, potassium, calcium, magnesium, iron, zinc, vitamin D, vitamin B12 and vitamin C. A short report shows energy, macros and fiber with a link to the same date's full report. Both include nutrient-data coverage, source counts and portion methods. Full reports additionally show nutrient-value origins and meal references. When a reviewed goal is active, reports show that date's historical calorie/macro target and remaining amounts. Food suggestions and configured micronutrient reference targets remain later work.
+Reports use the saved view preference, initially short. The short daily report shows recorded energy, macros and fiber, applicable historical targets/progress, a dated food-log completion question and relevant estimate or missing-data caveats. Known complete coverage counts are omitted; partial sums and unknown values retain coverage beside the affected nutrient. **Details** shows energy, protein, carbohydrate, fat, fiber, sodium, potassium, calcium, magnesium, iron, zinc, vitamin D, vitamin B12 and vitamin C, source/portion counts, nutrient-value origins, meal references and timezone explanations. When a reviewed goal is active, both views show that date's historical calorie/macro target and supported remaining amounts. Unresolved drafts withhold remaining targets. Food suggestions remain later work.
 
 For each nutrient, coverage counts food entries with a known value, including known zeros. Repeated foods in separate entries each count. An absent nutrient row and a stored unknown both remain unknown. For example, `Fiber: 1.5 g known · data 1/2 foods` means one of two logged foods supplied fiber data; the amount is only its known contribution. It does not mean the day's full fiber intake was 1.5 g. An empty day says intake is unknown, rather than displaying zero intake. Coverage never measures whether all meals were logged or diagnoses a deficiency.
 

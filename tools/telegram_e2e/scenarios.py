@@ -41,7 +41,7 @@ async def test_nutrient_coverage(e2e: tuple[Driver, Environment]) -> None:
         await driver.send(f"/meal {day} 100g rice", "Saved M")
         daily = await driver.send(f"/today {day}", "Daily food log")
         await env.delivered(daily)
-        await driver.click(daily, "All food logged", "complete")
+        await driver.click(daily, "All food logged", "All food logged for this date")
     review = await nutrient_report(driver, command)
     assert "W1=5/7, W2=5/7" in review
     assert "magnesium · RDA 420 mg/day · total: Coverage uncertain" in review
@@ -128,10 +128,12 @@ async def test_delete_and_undo(e2e: tuple[Driver, Environment]) -> None:
     driver, env = e2e
     receipt = await driver.send("100g rice", "Saved M1r1")
     await env.delivered(receipt)
-    deleted = await driver.click(receipt, "Delete", "Deleted")
+    more = await driver.click(receipt, "More", "More meal actions")
+    await env.delivered(more)
+    deleted = await driver.click(more, "Delete", "Deleted")
     await driver.send("/today", "No meals logged")
     await env.delivered(deleted)
-    await driver.click(deleted, "Undo", "100 g rice")
+    await driver.click(deleted, "Restore meal", "100 g rice")
     await driver.send("/today", "100")
     ledger(env, 1, 3)
 

@@ -128,14 +128,19 @@ async def test_measured_multi_food_log_has_exact_snapshot_and_truthful_receipt(
     assert "P: 55.0 g" in result["payload"]["text"]
     assert "C: unknown" in result["payload"]["text"]
     assert "F: 0.0 g" in result["payload"]["text"]
-    assert "Fiber: 1.5 g known (1 unknown)" in result["payload"]["text"]
+    assert "Fiber:" not in result["payload"]["text"]
+    assert result["payload"]["text"].index("Energy: 550 kcal") < result["payload"]["text"].index(
+        "1. 150 g rice"
+    )
     assert {button["text"] for button in result["payload"]["buttons"]} == {
         "Edit",
-        "Repeat",
-        "Save favorite",
-        "Delete",
-        "Undo",
+        "Log again",
+        "Undo save",
+        "Details",
+        "More",
     }
+    details = await process(service, store, press(result, "details", update_id=2))
+    assert "Fiber: 1.5 g known (partial; 1 item(s) unknown)" in details["payload"]["text"]
     assert await ledger_counts(store) == (1, 1)
 
 
@@ -218,7 +223,8 @@ async def test_delete_undo_buttons_are_durable_and_replayed_callbacks_do_not_rep
     service, store, catalog
 ):
     first = await process(service, store, message(1, "100g rice"))
-    delete_update = press(first, "delete", update_id=2, callback_id="synthetic-delete")
+    more = await process(service, store, press(first, "more", update_id=2))
+    delete_update = press(more, "delete", update_id=3, callback_id="synthetic-delete")
     deleted = await process(service, store, delete_update)
     assert (await current(store)).deleted
     async with store.engine.connect() as connection:
@@ -234,12 +240,12 @@ async def test_delete_undo_buttons_are_durable_and_replayed_callbacks_do_not_rep
             == 1
         )
     replay = delete_update.model_dump(mode="json", exclude_none=True)
-    replay["update_id"] = 3
+    replay["update_id"] = 4
     await process(service, store, Update.model_validate(replay))
     assert await ledger_counts(store) == (1, 2)
-    await process(service, store, press(deleted, "undo", update_id=4))
+    await process(service, store, press(deleted, "restore", update_id=5))
     assert not (await current(store)).deleted
-    stale = await process(service, store, press(first, "delete", update_id=5))
+    stale = await process(service, store, press(more, "delete", update_id=6))
     assert "older receipt" in stale["payload"]["text"]
     assert not (await current(store)).deleted
     assert await ledger_counts(store) == (1, 3)
@@ -257,25 +263,26 @@ async def test_edit_button_only_opens_current_correction_help(service, store, ca
 @pytest.mark.parametrize("forgery", ["message_id", "token", "action", "unsent", "expired"])
 async def test_forged_or_expired_meal_buttons_cannot_mutate(service, store, catalog, forgery):
     first = await process(service, store, message(1, "100g rice"))
+    more = await process(service, store, press(first, "more", update_id=2))
     if forgery in {"unsent", "expired"}:
         values = {"status": "queued"} if forgery == "unsent" else {"sent_at": 1.0}
         async with store.write() as connection:
             await connection.execute(
-                sa.update(outbox).where(outbox.c.id == first["id"]).values(**values)
+                sa.update(outbox).where(outbox.c.id == more["id"]).values(**values)
             )
-    update = press(first, "delete", message_id=99999 if forgery == "message_id" else None)
+    update = press(
+        more, "delete", update_id=3, message_id=99999 if forgery == "message_id" else None
+    )
     if forgery in {"token", "action"}:
         payload = update.model_dump(mode="json", exclude_none=True)
         payload["callback_query"]["data"] = (
-            "meal:delete:not-issued"
-            if forgery == "token"
-            else f"meal:erase:{first['button_token']}"
+            "meal:delete:not-issued" if forgery == "token" else f"meal:erase:{more['button_token']}"
         )
         update = Update.model_validate(payload)
     assert await process(service, store, update) is None
     assert await ledger_counts(store) == (1, 1)
     async with store.engine.connect() as connection:
-        rejected = await connection.execute(sa.select(inbox).where(inbox.c.update_id == 2))
+        rejected = await connection.execute(sa.select(inbox).where(inbox.c.update_id == 3))
         row = rejected.mappings().one()
         assert row["status"] == "rejected"
         assert row["payload"] is None
@@ -285,9 +292,9 @@ async def test_unissued_operation_with_otherwise_valid_receipt_token_is_rejected
     service, store, catalog
 ):
     first = await process(service, store, message(1, "100g rice"))
-    undone = await process(service, store, press(first, "undo", update_id=2))
-    assert "Undo" not in [button["text"] for button in undone["payload"]["buttons"]]
-    assert await process(service, store, press(undone, "undo", update_id=3)) is None
+    undone = await process(service, store, press(first, "undo_save", update_id=2))
+    assert "Undo save" not in [button["text"] for button in undone["payload"]["buttons"]]
+    assert await process(service, store, press(undone, "undo_save", update_id=3)) is None
     assert await ledger_counts(store) == (1, 2)
 
 

@@ -79,7 +79,8 @@ async def test_cooked_portion_keeps_batch_masses_and_scales_nutrients_only(servi
     assert all(item.recipe_share.recipe_id == 1 for item in saved.items)
     assert [item.recipe_share.ingredient_index for item in saved.items] == [0, 1]
     text = result["payload"]["text"].lower()
-    assert "300" in text and "portion" in text
+    assert "recipe r1v1: 300 g cooked · 1/4 of batch" in text
+    assert "ingredient equivalents" in text
     assert "ingredient" in text and "equivalent" in text
     report = await process(service, store, message(3, "/today full"))
     assert "135 kcal" in report["payload"]["text"]
