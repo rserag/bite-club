@@ -1,7 +1,9 @@
 """Pinned OpenRouter requests with no tools, plugins, history, or broad fallbacks."""
 
+import asyncio
 import base64
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -15,9 +17,12 @@ from nutrition_bot.adapters.ai.photos import image_media_type
 from nutrition_bot.domain.ai import (
     MAX_AI_RESPONSE_BYTES,
     MAX_AI_TEXT_BYTES,
+    AiCallMetrics,
     AiCatalogItem,
     AiMealIntent,
     AiUnavailable,
+    known_token_count,
+    known_token_detail,
 )
 from nutrition_bot.domain.ai_policy import ReviewedAiRoute
 
@@ -161,8 +166,18 @@ class OpenRouterAdapter:
             "plugins": [],
         }
 
-    async def complete(self, route: ReviewedAiRoute, body: Mapping[str, Any]) -> AiCompletion:
+    async def complete(
+        self,
+        route: ReviewedAiRoute,
+        body: Mapping[str, Any],
+        *,
+        metrics: AiCallMetrics | None = None,
+    ) -> AiCompletion:
+        metrics = metrics if metrics is not None else AiCallMetrics()
+        metrics.model = route.model
+        started = time.monotonic()
         try:
+            metrics.inference_sent = True
             async with self._client.stream(
                 "POST",
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -171,20 +186,43 @@ class OpenRouterAdapter:
                 timeout=30,
             ) as response:
                 if response.status_code != 200:
+                    metrics.failure_category = (
+                        "usage_limit" if response.status_code == 429 else "http"
+                    )
                     raise AiTransportError()
                 data = bytearray()
                 async for chunk in response.aiter_bytes():
                     data.extend(chunk)
                     if len(data) > MAX_AI_RESPONSE_BYTES:
+                        metrics.failure_category = "oversized"
                         raise AiTransportError()
             result = json.loads(data)
-        except (httpx.HTTPError, ValueError, AiTransportError):
+        except httpx.TimeoutException:
+            metrics.failure_category = "timeout"
             raise AiTransportError(
                 "The AI attempt did not produce a trustworthy billing result."
             ) from None
+        except asyncio.CancelledError:
+            metrics.failure_category = "timeout"
+            raise
+        except httpx.HTTPError:
+            metrics.failure_category = "network"
+            raise AiTransportError(
+                "The AI attempt did not produce a trustworthy billing result."
+            ) from None
+        except (ValueError, AiTransportError):
+            if metrics.failure_category is None:
+                metrics.failure_category = "schema"
+            raise AiTransportError(
+                "The AI attempt did not produce a trustworthy billing result."
+            ) from None
+        finally:
+            metrics.inference_ms = int((time.monotonic() - started) * 1000)
         if not isinstance(result, dict):
+            metrics.failure_category = "schema"
             raise AiTransportError("The AI attempt did not produce a trustworthy billing result.")
         charge = _cost(result.get("usage"))
+        metrics.charged_micro_usd = charge
         generation = result.get("id")
         if not isinstance(generation, str) or not 1 <= len(generation) <= 160:
             generation = None
@@ -192,8 +230,22 @@ class OpenRouterAdapter:
             result.get("model") != route.model
             or result.get("provider") not in route.response_provider_names
         ):
+            metrics.failure_category = "policy"
             return AiCompletion(None, charge, generation, "policy")
         usage = result.get("usage")
+        if isinstance(usage, dict):
+            metrics.input_tokens = known_token_count(usage.get("prompt_tokens"))
+            metrics.output_tokens = known_token_count(usage.get("completion_tokens"))
+            input_details = usage.get("prompt_tokens_details")
+            output_details = usage.get("completion_tokens_details")
+            if isinstance(input_details, dict):
+                metrics.cached_tokens = known_token_detail(
+                    input_details.get("cached_tokens"), total=metrics.input_tokens
+                )
+            if isinstance(output_details, dict):
+                metrics.reasoning_tokens = known_token_detail(
+                    output_details.get("reasoning_tokens"), total=metrics.output_tokens
+                )
         if not isinstance(usage, dict) or any(
             type(usage.get(field)) is not int or not 0 <= usage[field] <= ceiling
             for field, ceiling in (
@@ -201,8 +253,10 @@ class OpenRouterAdapter:
                 ("completion_tokens", route.max_output_tokens),
             )
         ):
+            metrics.failure_category = "usage"
             return AiCompletion(None, charge, generation, "usage")
         if charge is not None and charge > route.reservation_micro_usd:
+            metrics.failure_category = "pricing"
             return AiCompletion(None, charge, generation, "pricing")
         try:
             choices = result["choices"]
@@ -211,11 +265,15 @@ class OpenRouterAdapter:
                 or len(choices) != 1
                 or choices[0]["finish_reason"] != "stop"
             ):
+                metrics.failure_category = "incomplete"
                 raise ValueError
             message = choices[0]["message"]
             if message.get("tool_calls") or message.get("refusal"):
+                metrics.failure_category = "refusal" if message.get("refusal") else "schema"
                 raise ValueError
             proposal = AiMealIntent.model_validate_json(message["content"])
         except (KeyError, TypeError, ValueError, ValidationError):
+            if metrics.failure_category is None:
+                metrics.failure_category = "schema"
             return AiCompletion(None, charge, generation, "schema")
         return AiCompletion(proposal, charge, generation)

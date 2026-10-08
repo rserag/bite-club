@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -16,10 +17,14 @@ from nutrition_bot.adapters.ai.photos import image_media_type
 from nutrition_bot.domain.ai import (
     MAX_AI_RESPONSE_BYTES,
     MAX_AI_TEXT_BYTES,
+    AiCallMetrics,
     AiCatalogItem,
+    AiFailureCategory,
     AiMealIntent,
     AiRole,
     AiUnavailable,
+    known_token_count,
+    known_token_detail,
 )
 from nutrition_bot.domain.food import FrozenModel
 
@@ -164,17 +169,53 @@ class ChatGPTPlanAdapter:
             "tools": [],
         }
 
-    async def complete(self, *, role: AiRole, body: dict[str, Any]) -> AiMealIntent:
+    async def complete(
+        self, *, role: AiRole, body: dict[str, Any], metrics: AiCallMetrics | None = None
+    ) -> AiMealIntent:
+        metrics = metrics if metrics is not None else AiCallMetrics()
+        metrics.model = (
+            self.policy.meal_photo_model if role == "meal_photo" else self.policy.meal_text_model
+        )
         async with self._lock:
-            credentials = await access_credentials(self._client, self.credentials_path)
-            token = credentials.access_token.get_secret_value()
-            model = self.policy.check(role)
-            models = await self._models(token)
-            if not any(
-                item.get("slug") == model and item.get("visibility") == "list" for item in models
-            ):
-                raise AiUnavailable("The selected model is not available to this ChatGPT account.")
+            started = time.monotonic()
             try:
+                credentials = await access_credentials(self._client, self.credentials_path)
+            except AiUnavailable:
+                metrics.failure_category = "auth"
+                raise
+            except asyncio.CancelledError:
+                metrics.failure_category = "timeout"
+                raise
+            finally:
+                metrics.auth_ms = int((time.monotonic() - started) * 1000)
+            token = credentials.access_token.get_secret_value()
+            try:
+                model = self.policy.check(role)
+            except AiUnavailable:
+                metrics.failure_category = "policy"
+                raise
+            metrics.model = model
+            started = time.monotonic()
+            try:
+                models = await self._models(token)
+                if not any(
+                    item.get("slug") == model and item.get("visibility") == "list"
+                    for item in models
+                ):
+                    raise AiUnavailable(
+                        "The selected model is not available to this ChatGPT account."
+                    )
+            except AiUnavailable:
+                metrics.failure_category = "catalog"
+                raise
+            except asyncio.CancelledError:
+                metrics.failure_category = "timeout"
+                raise
+            finally:
+                metrics.model_catalog_ms = int((time.monotonic() - started) * 1000)
+            started = time.monotonic()
+            try:
+                metrics.inference_sent = True
                 async with self._client.stream(
                     "POST",
                     "https://api.openai.com/v1/responses",
@@ -186,17 +227,124 @@ class ChatGPTPlanAdapter:
                     timeout=30,
                 ) as response:
                     if response.status_code != 200:
+                        metrics.failure_category = (
+                            "usage_limit" if response.status_code == 429 else "http"
+                        )
                         raise ValueError
                     data = bytearray()
                     async for chunk in response.aiter_bytes():
                         data.extend(chunk)
                         if len(data) > MAX_AI_RESPONSE_BYTES:
+                            metrics.failure_category = "oversized"
                             raise ValueError
+                _collect_stream_metrics(bytes(data), expected_model=model, metrics=metrics)
                 return parse_completed_stream(bytes(data), expected_model=model)
-            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            except httpx.TimeoutException:
+                metrics.failure_category = "timeout"
                 raise AiUnavailable(
                     "ChatGPT could not complete a validated meal draft. Enter it manually."
                 ) from None
+            except asyncio.CancelledError:
+                metrics.failure_category = "timeout"
+                raise
+            except httpx.HTTPError:
+                metrics.failure_category = "network"
+                raise AiUnavailable(
+                    "ChatGPT could not complete a validated meal draft. Enter it manually."
+                ) from None
+            except (ValueError, KeyError, TypeError):
+                if metrics.failure_category is None:
+                    metrics.failure_category = "schema"
+                raise AiUnavailable(
+                    "ChatGPT could not complete a validated meal draft. Enter it manually."
+                ) from None
+            finally:
+                metrics.inference_ms = int((time.monotonic() - started) * 1000)
+
+
+def _collect_stream_metrics(data: bytes, *, expected_model: str, metrics: AiCallMetrics) -> None:
+    """Read only completed usage and fixed failure codes; never retain stream content."""
+    completed: dict[str, Any] | None = None
+    failure: AiFailureCategory | None = None
+    try:
+        for block in data.decode().replace("\r\n", "\n").split("\n\n"):
+            payload = "\n".join(
+                line[5:].lstrip() for line in block.splitlines() if line.startswith("data:")
+            )
+            if not payload or payload == "[DONE]":
+                continue
+            event = json.loads(payload)
+            if not isinstance(event, dict) or completed is not None:
+                metrics.failure_category = "schema"
+                return
+            kind = event.get("type", "")
+            if kind in {"error", "response.failed"}:
+                error = event.get("error")
+                if not isinstance(error, dict):
+                    response = event.get("response")
+                    error = response.get("error") if isinstance(response, dict) else None
+                failure = (
+                    "usage_limit"
+                    if isinstance(error, dict)
+                    and error.get("code")
+                    in {
+                        "rate_limit_exceeded",
+                        "quota_exceeded",
+                        "subscription_sharing_usage_limit_exceeded",
+                        "subscription_sharing_usage_unavailable",
+                    }
+                    else "incomplete"
+                )
+            elif kind == "response.incomplete":
+                failure = "incomplete"
+            elif kind == "response.refusal.done":
+                failure = "refusal"
+            elif kind == "response.completed":
+                response = event.get("response")
+                if not isinstance(response, dict):
+                    metrics.failure_category = "schema"
+                    return
+                completed = response
+        if failure is not None and failure != "refusal":
+            metrics.failure_category = failure
+            return
+        if completed is None or completed.get("status") != "completed":
+            metrics.failure_category = failure or "incomplete"
+            return
+        if completed.get("model") != expected_model:
+            metrics.failure_category = "policy"
+            return
+        usage = completed.get("usage")
+        if isinstance(usage, dict):
+            metrics.input_tokens = known_token_count(usage.get("input_tokens"))
+            metrics.output_tokens = known_token_count(usage.get("output_tokens"))
+            input_details = usage.get("input_tokens_details")
+            output_details = usage.get("output_tokens_details")
+            if isinstance(input_details, dict):
+                metrics.cached_tokens = known_token_detail(
+                    input_details.get("cached_tokens"), total=metrics.input_tokens
+                )
+            if isinstance(output_details, dict):
+                metrics.reasoning_tokens = known_token_detail(
+                    output_details.get("reasoning_tokens"), total=metrics.output_tokens
+                )
+        output = completed.get("output")
+        if (
+            failure == "refusal"
+            or isinstance(output, list)
+            and any(
+                isinstance(item, dict)
+                and isinstance(item.get("content"), list)
+                and any(
+                    isinstance(part, dict) and part.get("type") == "refusal"
+                    for part in item["content"]
+                )
+                for item in output
+            )
+        ):
+            metrics.failure_category = "refusal"
+    except (UnicodeError, ValueError, TypeError):
+        metrics.failure_category = "schema"
 
 
 def parse_completed_stream(data: bytes, *, expected_model: str) -> AiMealIntent:

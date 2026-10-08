@@ -1,6 +1,6 @@
 import sqlalchemy as sa
 
-SCHEMA_REVISION = "0024_guided_flows"
+SCHEMA_REVISION = "0025_ai_metrics"
 metadata = sa.MetaData()
 
 profile = sa.Table(
@@ -334,6 +334,7 @@ meal_item_nutrients = sa.Table(
 # Register temporary draft tables after their shared foreign-key targets exist.
 from nutrition_bot.adapters.database import schema_adaptive as schema_adaptive  # noqa: E402
 from nutrition_bot.adapters.database import schema_ai as schema_ai  # noqa: E402
+from nutrition_bot.adapters.database import schema_ai_metrics as schema_ai_metrics  # noqa: E402
 from nutrition_bot.adapters.database import schema_aliases as schema_aliases  # noqa: E402
 from nutrition_bot.adapters.database import schema_allocations as schema_allocations  # noqa: E402
 from nutrition_bot.adapters.database import schema_checkins as schema_checkins  # noqa: E402

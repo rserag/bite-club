@@ -1,5 +1,6 @@
 """AI proposes reviewed-catalog identities and quantities, never nutrition facts."""
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Annotated, Literal
 
@@ -12,6 +13,56 @@ MONTHLY_MICRO_USD_LIMIT = 10_000_000
 MAX_AI_TEXT_BYTES = 4000
 MAX_AI_IMAGE_BYTES = 2_000_000
 MAX_AI_RESPONSE_BYTES = 65_536
+AI_PROMPT_VERSION = "meal-extraction-v2"
+AI_SCHEMA_VERSION = "meal-proposal-v1"
+AiFailureCategory = Literal[
+    "auth",
+    "policy",
+    "catalog",
+    "network",
+    "timeout",
+    "http",
+    "usage_limit",
+    "incomplete",
+    "refusal",
+    "oversized",
+    "schema",
+    "usage",
+    "pricing",
+    "interrupted",
+    "download",
+]
+
+
+@dataclass
+class AiCallMetrics:
+    """Content-free observations of one provider attempt; absent usage stays unknown."""
+
+    model: str | None = None
+    prompt_version: str = AI_PROMPT_VERSION
+    schema_version: str = AI_SCHEMA_VERSION
+    reasoning_effort: str = "default"
+    auth_ms: int | None = None
+    model_catalog_ms: int | None = None
+    inference_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cached_tokens: int | None = None
+    charged_micro_usd: int | None = None
+    inference_sent: bool = False
+    failure_category: AiFailureCategory | None = None
+
+
+def known_token_count(value: object) -> int | None:
+    """Accept only exact, bounded integers supplied by a complete provider response."""
+    return value if type(value) is int and 0 <= value <= MAX_INTEGER else None
+
+
+def known_token_detail(value: object, *, total: int | None) -> int | None:
+    """A detailed usage count is credible only within its known parent total."""
+    count = known_token_count(value)
+    return count if total is not None and count is not None and count <= total else None
 
 
 class AiUnavailable(ValueError):

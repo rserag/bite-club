@@ -1,8 +1,11 @@
 """Optional meal interpretation outside write transactions and exact reviewed drafts."""
 
 import asyncio
+import logging
 import time
+from dataclasses import dataclass, field
 from datetime import date, datetime
+from typing import cast
 
 import sqlalchemy as sa
 from aiogram.types import Message
@@ -32,10 +35,18 @@ from nutrition_bot.application.ai_budget import (
 )
 from nutrition_bot.application.draft_conversation import draft_receipt
 from nutrition_bot.application.meal_conversation import MealReply, _date_timestamp
-from nutrition_bot.domain.ai import AiCatalogItem, AiOutcome, AiRole, AiUnavailable
+from nutrition_bot.domain.ai import AiCallMetrics, AiCatalogItem, AiOutcome, AiRole, AiUnavailable
 from nutrition_bot.domain.ai_policy import AiEndpointManifest
 from nutrition_bot.domain.drafts import DraftContent, PlannedItem
 from nutrition_bot.domain.food import exact_decimal, grams_to_milligrams
+
+logger = logging.getLogger("nutrition_bot.ai_metrics")
+
+
+@dataclass
+class _InterpretationMetrics:
+    calls: list[AiCallMetrics] = field(default_factory=list)
+    replayed: bool = False
 
 
 class AiService:
@@ -114,12 +125,36 @@ class AiService:
         local_date: date,
         photo: bytes | None = None,
     ) -> AiOutcome:
+        created_at = time.time()
+        started = time.monotonic()
+        measurement = _InterpretationMetrics()
+        calls = measurement.calls
         try:
-            return await self._interpret(
-                request_key=request_key, text=text, local_date=local_date, photo=photo
+            outcome = await self._interpret(
+                request_key=request_key,
+                text=text,
+                local_date=local_date,
+                photo=photo,
+                measurement=measurement,
             )
         except asyncio.CancelledError:
-            cleanup = asyncio.create_task(self.recover_abandoned(request_key=request_key))
+
+            async def abandon() -> None:
+                await self.recover_abandoned(request_key=request_key)
+                if calls:
+                    calls[-1].failure_category = "interrupted"
+                await self._record_measurement(
+                    AiOutcome(
+                        request_key=request_key,
+                        role="meal_photo" if photo is not None else "meal_text",
+                        status="unknown",
+                    ),
+                    calls,
+                    created_at=created_at,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+
+            cleanup = asyncio.create_task(abandon())
             while not cleanup.done():
                 try:
                     await asyncio.shield(cleanup)
@@ -127,6 +162,68 @@ class AiService:
                     continue
             cleanup.result()
             raise
+        if not measurement.replayed:
+            await self._record_measurement(
+                outcome,
+                calls,
+                created_at=created_at,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
+        return outcome
+
+    async def _record_measurement(
+        self, outcome: AiOutcome, calls: list[AiCallMetrics], *, created_at: float, elapsed_ms: int
+    ) -> None:
+        """Optional measurements cannot turn a successful interpretation into a failure."""
+        from nutrition_bot.application.ai_metrics import record_metric
+
+        sent = [call for call in calls if call.inference_sent]
+
+        def stage(field: str) -> int | None:
+            values = [cast(int | None, getattr(call, field)) for call in calls]
+            known = [value for value in values if value is not None]
+            return sum(known) if known else None
+
+        def usage(field: str) -> int | None:
+            values = [cast(int | None, getattr(call, field)) for call in sent]
+            if not values or any(value is None for value in values):
+                return None
+            return sum(value for value in values if value is not None)
+
+        latest = calls[-1] if calls else AiCallMetrics()
+        failure = latest.failure_category
+        if outcome.status == "unknown" and failure is None:
+            failure = "interrupted"
+        try:
+            async with self.store.write() as connection:
+                await record_metric(
+                    connection,
+                    request_key=outcome.request_key,
+                    role=outcome.role,
+                    source="evaluation" if self.evaluation_prefix else "normal",
+                    handling="ai",
+                    status=outcome.status,
+                    created_at=created_at,
+                    completed_at=time.time(),
+                    elapsed_ms=elapsed_ms,
+                    model=latest.model,
+                    prompt_version=latest.prompt_version,
+                    schema_version=latest.schema_version,
+                    reasoning_effort=latest.reasoning_effort,
+                    auth_ms=stage("auth_ms"),
+                    model_catalog_ms=stage("model_catalog_ms"),
+                    inference_ms=stage("inference_ms"),
+                    input_tokens=usage("input_tokens"),
+                    output_tokens=usage("output_tokens"),
+                    reasoning_tokens=usage("reasoning_tokens"),
+                    cached_tokens=usage("cached_tokens"),
+                    charged_micro_usd=usage("charged_micro_usd"),
+                    inference_sent=bool(sent),
+                    attempts_sent=len(sent),
+                    failure_category=failure,
+                )
+        except Exception:
+            logger.warning("ai_measurement_unavailable")
 
     async def recover_abandoned(self, *, request_key: str | None = None) -> None:
         """Run once before a sole worker starts; preserve uncertain cost and never replay."""
@@ -171,6 +268,7 @@ class AiService:
         text: str,
         local_date: date,
         photo: bytes | None = None,
+        measurement: _InterpretationMetrics | None = None,
     ) -> AiOutcome:
         role: AiRole = "meal_photo" if photo is not None else "meal_text"
         if not 1 <= len(request_key) <= 128 or (
@@ -182,7 +280,12 @@ class AiService:
             return AiOutcome(request_key=request_key, role=role, status="disabled")
         if self.plan_adapter is not None:
             return await self._interpret_plan(
-                request_key=request_key, text=text, local_date=local_date, photo=photo, role=role
+                request_key=request_key,
+                text=text,
+                local_date=local_date,
+                photo=photo,
+                role=role,
+                measurement=measurement,
             )
         assert self.manifest is not None and self.adapter is not None
         # One paid request at a time. Persistent claims also prevent a second
@@ -200,6 +303,8 @@ class AiService:
                     .one_or_none()
                 )
                 if existing is not None:
+                    if measurement is not None:
+                        measurement.replayed = True
                     if existing["outcome"] is not None:
                         return AiOutcome.model_validate(existing["outcome"])
                     # Never restart a claimed request whose result was lost or consumed.
@@ -255,10 +360,15 @@ class AiService:
                 if attempt_id is None:
                     return await self._finish(request_key, role, "budget")
                 try:
+                    metrics = AiCallMetrics()
+                    if measurement is not None:
+                        measurement.calls.append(metrics)
                     # Every attempt is bounded, even injected transport clients.
                     async with asyncio.timeout(30):
-                        completion = await self.adapter.complete(route, body)
+                        completion = await self.adapter.complete(route, body, metrics=metrics)
                 except (AiTransportError, TimeoutError):
+                    if metrics.failure_category is None:
+                        metrics.failure_category = "timeout"
                     async with self.store.write() as connection:
                         await settle_attempt(
                             connection,
@@ -291,6 +401,7 @@ class AiService:
                     if proposal.local_date > local_date or any(
                         item.food_version_id not in known for item in proposal.items
                     ):
+                        metrics.failure_category = "schema"
                         return await self._finish(request_key, role, "unavailable")
                     outcome = AiOutcome(
                         request_key=request_key,
@@ -314,6 +425,7 @@ class AiService:
         local_date: date,
         photo: bytes | None,
         role: AiRole,
+        measurement: _InterpretationMetrics | None = None,
     ) -> AiOutcome:
         from datetime import UTC
 
@@ -331,6 +443,8 @@ class AiService:
                     .one_or_none()
                 )
                 if existing is not None:
+                    if measurement is not None:
+                        measurement.replayed = True
                     if existing["outcome"] is not None:
                         return AiOutcome.model_validate(existing["outcome"])
                     return AiOutcome(request_key=request_key, role=role, status="unknown")
@@ -372,9 +486,16 @@ class AiService:
                     )
                 )
             try:
+                metrics = AiCallMetrics()
+                if measurement is not None:
+                    measurement.calls.append(metrics)
                 async with asyncio.timeout(30):
-                    proposal = await self.plan_adapter.complete(role=role, body=body)
+                    proposal = await self.plan_adapter.complete(
+                        role=role, body=body, metrics=metrics
+                    )
             except (AiUnavailable, TimeoutError):
+                if metrics.failure_category is None:
+                    metrics.failure_category = "timeout"
                 async with self.store.write() as connection:
                     await connection.execute(
                         sa.update(ai_plan_invocations)
@@ -386,6 +507,8 @@ class AiService:
             valid = proposal.local_date <= local_date and all(
                 item.food_version_id in known for item in proposal.items
             )
+            if not valid:
+                metrics.failure_category = "schema"
             outcome = AiOutcome(
                 request_key=request_key,
                 role=role,
@@ -465,5 +588,8 @@ async def create_ai_draft(
         review_required=True,
     )
     draft = await create_draft(connection, content, action_key=action_key, now=time.time())
+    from nutrition_bot.application.ai_metrics import link_draft
+
+    await link_draft(connection, outcome.request_key, draft.id, draft.revision)
     await consume_ai_outcome(connection, outcome.request_key)
     return await draft_receipt(connection, draft, "AI proposal — review every item")

@@ -160,6 +160,8 @@ class Service:
                 return await self._process_one(prepared)
             except _NeedsAi as request:
                 assert self.ai_service is not None
+                photo_started = time.monotonic()
+                photo_created_at = time.time()
                 photo = None
                 if request.message.photo:
                     if self.gateway is None:
@@ -169,6 +171,9 @@ class Service:
                             status="unavailable",
                             request_key=str(request.update_id),
                             role="meal_photo",
+                        )
+                        await self._measure_failed_photo(
+                            prepared[request.update_id], photo_created_at, photo_started
                         )
                         continue
                     try:
@@ -181,6 +186,9 @@ class Service:
                             request_key=str(request.update_id),
                             role="meal_photo",
                         )
+                        await self._measure_failed_photo(
+                            prepared[request.update_id], photo_created_at, photo_started
+                        )
                         continue
                 prepared[request.update_id] = await self.ai_service.interpret(
                     request_key=str(request.update_id),
@@ -191,7 +199,21 @@ class Service:
                     photo=photo,
                 )
 
+    async def _measure_failed_photo(
+        self, outcome: "AiOutcome", created_at: float, started: float
+    ) -> None:
+        from nutrition_bot.domain.ai import AiCallMetrics
+
+        assert self.ai_service is not None
+        await self.ai_service._record_measurement(
+            outcome,
+            [AiCallMetrics(failure_category="download")],
+            created_at=created_at,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+
     async def _process_one(self, prepared: dict[int, "AiOutcome"]) -> bool:
+        processing_started = time.monotonic()
         # All processing is a local transaction. A crash leaves this row pending;
         # no in-progress inbox lease needs reclaiming and no network occurs here.
         async with self.store.write() as connection:
@@ -844,6 +866,30 @@ class Service:
                     }:
                         await savepoint.rollback()
                 text, kind = result.text, result.kind
+            if (
+                not callback
+                and not update.edited_message
+                and not message.reply_to_message
+                and row["update_id"] not in prepared
+                and (message.photo or (message.text and not message.text.lstrip().startswith("/")))
+            ):
+                # Count only original standalone text/photo inputs. Commands,
+                # callbacks and draft edits are outside this fallback denominator.
+                from nutrition_bot.application.ai_metrics import record_metric
+
+                await record_metric(
+                    connection,
+                    request_key=str(row["update_id"]),
+                    role="meal_photo" if message.photo else "meal_text",
+                    source="normal",
+                    handling="local",
+                    status="clarify" if kind == "meal_rejected" else "handled",
+                    created_at=row["received_at"],
+                    completed_at=time.time(),
+                    elapsed_ms=int((time.monotonic() - processing_started) * 1000),
+                    inference_sent=False,
+                    attempts_sent=0,
+                )
             if row["update_id"] in prepared:
                 from nutrition_bot.application.ai_budget import consume_ai_outcome
 

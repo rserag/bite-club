@@ -54,6 +54,8 @@ The demo exercises the actual application service with **synthetic food values**
 
 Next increments include verified-food suggestions, packaged-food label/barcode workflows, broader historical AI questions, exports and automatic encrypted backups. Planned behavior is documented separately from implemented behavior. AI providers are optional and disabled in the public configuration; live deployment activation is separate.
 
+The [AI user guide](docs/ai-user-guide.md) explains clear meal descriptions, draft review, corrections and manual fallback when AI is enabled.
+
 Operator-run [backup and restore tools](docs/backup-and-restore.md) provide consistent SQLite snapshots, encrypted restic upload/retention, and isolated restore verification. Scheduling and an actual off-site recovery drill remain separate work.
 
 ## How it fits together

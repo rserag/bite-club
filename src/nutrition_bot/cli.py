@@ -208,6 +208,8 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("run", "migrate", "healthcheck", "retry-replies"):
         commands.add_parser(name)
+    metrics = commands.add_parser("ai-metrics", help="Read private AI efficiency aggregates")
+    metrics.add_argument("--days", type=int, choices=range(1, 31), default=3, metavar="1–30")
     backup = commands.add_parser("backup", help="Create a private, consistent local snapshot")
     backup.add_argument("--output", type=Path, required=True)
     backup.add_argument("--image-digest", required=True)
@@ -271,6 +273,10 @@ def main() -> None:
         elif args.command == "migrate":
             migrate(StorageSettings())
             print("Database migrations applied.")
+        elif args.command == "ai-metrics":
+            from nutrition_bot.application.ai_metrics import metrics_summary
+
+            print(json.dumps(metrics_summary(StorageSettings().database_path, days=args.days)))
         elif args.command == "food-import":
             assert args.input_file is not None
             storage = StorageSettings()
