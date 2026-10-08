@@ -1,6 +1,7 @@
 """Immutable recipe batches. Callers own authorization, actions and transactions."""
 
 import time
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from pydantic import ValidationError
@@ -53,7 +54,7 @@ async def _definition(connection: AsyncConnection, value: RecipeDefinition) -> R
             "Supply one to ten resolved ingredients and a valid batch yield or serving definition."
         ) from None
     identities = {item.food_version_id for item in value.items}
-    found = set(
+    found: set[int] = set(
         (
             await connection.scalars(
                 sa.select(food_versions.c.id)
@@ -158,7 +159,7 @@ async def list_recipes(
     )
     if not include_archived:
         statement = statement.where(recipe_versions.c.archived.is_(False))
-    versions = (
+    versions: Sequence[int] = (
         await connection.scalars(
             statement.order_by(recipes.c.normalized_name, recipes.c.id).limit(limit)
         )

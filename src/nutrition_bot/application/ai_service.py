@@ -137,7 +137,7 @@ class AiService:
             matching = ai_requests.c.state == "running"
             if request_key is not None:
                 matching = sa.and_(matching, ai_requests.c.request_key == request_key)
-            keys = tuple(
+            keys: tuple[str, ...] = tuple(
                 (
                     await connection.scalars(sa.select(ai_requests.c.request_key).where(matching))
                 ).all()

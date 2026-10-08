@@ -1,4 +1,5 @@
 import time
+from collections.abc import Sequence
 from datetime import date, timedelta
 
 import sqlalchemy as sa
@@ -33,7 +34,7 @@ async def active_allocation(connection: AsyncConnection, day: date) -> RowMappin
 
 
 async def target_change_blocked(connection: AsyncConnection, effective_from: date) -> bool:
-    weeks = (
+    weeks: Sequence[date] = (
         (
             await connection.execute(
                 sa.select(proposals.c.week_start)

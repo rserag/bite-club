@@ -1,5 +1,6 @@
 """Bounded, read-only views over existing immutable application snapshots."""
 
+from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import date, timedelta
 from decimal import Decimal, localcontext
@@ -152,7 +153,7 @@ async def food_choices(connection: AsyncConnection, query: str) -> list[dict[str
                 query.casefold(), autoescape=True
             )
         )
-    ids = (await connection.execute(statement)).scalars().all()
+    ids: Sequence[int] = (await connection.execute(statement)).scalars().all()
     result = []
     for version_id in ids:
         food = await get_food_version(connection, version_id)
@@ -181,7 +182,7 @@ async def meal_history(connection: AsyncConnection, before: int | None) -> list[
     )
     if before is not None:
         statement = statement.where(meals.c.id < before)
-    ids = (await connection.execute(statement)).scalars().all()
+    ids: Sequence[int] = (await connection.execute(statement)).scalars().all()
     result = []
     for meal_id in ids:
         meal = await get_meal(connection, meal_id)

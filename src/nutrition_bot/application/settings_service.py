@@ -261,7 +261,7 @@ async def next_notifications(
 ) -> dict[str, datetime | None]:
     result: dict[str, datetime | None] = {}
     day = datetime.fromtimestamp(now, ZoneInfo(preferences.timezone)).date()
-    delivered = set(
+    delivered: set[str] = set(
         (
             await connection.execute(
                 sa.select(reminder_jobs.c.logical_key)
@@ -278,7 +278,7 @@ async def next_notifications(
             )
         ).scalars()
     )
-    completed_days = {
+    completed_days: dict[str, set[date]] = {
         "weight": set(
             (
                 await connection.execute(

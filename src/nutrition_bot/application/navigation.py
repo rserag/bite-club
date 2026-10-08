@@ -2,6 +2,7 @@
 
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal, localcontext
@@ -267,7 +268,7 @@ async def ui_action(
             + (("Recent meals", "recent"), ("Home", "home")),
         )
     if action == "recent":
-        ids = (
+        ids: Sequence[int] = (
             (await connection.execute(sa.select(meals.c.id).order_by(meals.c.id.desc()).limit(8)))
             .scalars()
             .all()
