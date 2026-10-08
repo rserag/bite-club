@@ -441,15 +441,21 @@ async def create_ai_draft(
                 edible_milligrams=mass,
                 original_quantity=item.grams,
                 original_unit="g" if item.grams is not None else None,
-                estimate_basis=(
-                    f"AI {origin}; review food, preparation and amount. " + item.basis
-                    if mass is not None
-                    else None
-                ),
+                # Model prose can conceal nutrient claims. Persist only the
+                # locally defined origin alongside the explicitly reviewed mass.
+                estimate_basis=f"AI {origin}; review food, preparation and amount."
+                if mass is not None
+                else None,
             )
         )
     content = DraftContent(
-        label=proposal.label,
+        label={
+            "breakfast": "Breakfast",
+            "lunch": "Lunch",
+            "dinner": "Dinner",
+            "snack": "Snack",
+            "meal": "Meal",
+        }.get(proposal.label.strip().casefold(), "Meal"),
         local_date=proposal.local_date,
         timezone=str(reference.tzinfo),
         consumed_at=_date_timestamp(proposal.local_date, reference),

@@ -552,13 +552,22 @@ async def test_concurrent_calls_are_serialized_and_cancellation_is_not_replayed(
         await client.aclose()
 
 
-async def test_ai_proposal_creates_review_required_draft_without_saving_meal(store, catalog):
+@pytest.mark.parametrize("label", ["Lunch", "Invented Vitamin C 1000 mg"])
+@pytest.mark.parametrize("role", ["meal_text", "meal_photo"])
+async def test_ai_proposal_creates_reviewed_draft_without_model_prose_or_saving_meal(
+    store, catalog, label, role
+):
     update = message(1, "some rice")
     outcome = AiOutcome(
         request_key="synthetic-1",
-        role="meal_text",
+        role=role,
         status="ready",
-        proposal=AiMealIntent.model_validate(proposed()),
+        proposal=AiMealIntent.model_validate(
+            proposed(
+                label=label,
+                items=[{"food_version_id": 1, "grams": "150", "basis": "Invented calcium 999 mg"}],
+            )
+        ),
     )
     async with store.write() as connection:
         await connection.execute(
@@ -583,6 +592,13 @@ async def test_ai_proposal_creates_review_required_draft_without_saving_meal(sto
         draft = await get_draft(connection, 1)
         assert draft.content.review_required is True
         assert draft.content.items[0].edible_milligrams == 150000
+        assert draft.content.label == ("Lunch" if label == "Lunch" else "Meal")
+        origin = "text interpretation" if role == "meal_text" else "photo estimate"
+        assert (
+            draft.content.items[0].estimate_basis
+            == f"AI {origin}; review food, preparation and amount."
+        )
+        assert "1000" not in reply.text and "999" not in reply.text
         assert await connection.scalar(sa.select(sa.func.count()).select_from(meals)) == 0
 
 
@@ -803,3 +819,34 @@ async def test_evaluation_reports_clear_and_ambiguity_accuracy_without_relaxing_
         "ambiguity_cases": 1,
         "ambiguity_correct": 1,
     }
+
+
+@pytest.mark.parametrize(
+    "changes", [{"local_date": (TODAY - timedelta(days=1)).isoformat()}, {"label": "Dinner"}]
+)
+async def test_evaluation_checks_context_date_and_known_label(changes):
+    case = EvaluationCase(
+        id="date-label-case",
+        synthetic=True,
+        role="meal_text",
+        text="Synthetic lunch",
+        catalog=(AiCatalogItem(food_version_id=1, name="Synthetic rice", preparation="cooked"),),
+        expected_intent="meal",
+        expected_label="Lunch",
+        expected_items=(AiMealItem(food_version_id=1, grams="150", basis="Synthetic"),),
+    )
+
+    class SyntheticService:
+        evaluation_prefix = "eval:synthetic-run:"
+        evaluation_catalog = ()
+
+        async def interpret(self, *, request_key, **kwargs):
+            return AiOutcome(
+                request_key=request_key,
+                role="meal_text",
+                status="ready",
+                proposal=AiMealIntent.model_validate(proposed(**changes)),
+            )
+
+    result = await evaluate(SyntheticService(), (case,), run_id="synthetic-run")
+    assert result["clear_correct"] == 0 and result["completed"] == 1

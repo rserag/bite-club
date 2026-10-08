@@ -5,7 +5,7 @@ import asyncio
 import base64
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -31,6 +31,8 @@ class EvaluationCase(FrozenModel):
     photo_base64: str | None = Field(default=None, max_length=2_666_668)
     expected_intent: Literal["meal", "clarify"]
     expected_items: tuple[AiMealItem, ...] = Field(default=(), max_length=10)
+    expected_local_date: date | Literal["context"] = "context"
+    expected_label: Literal["Breakfast", "Lunch", "Dinner", "Snack", "Meal"] | None = None
 
 
 def load_cases(path: Path) -> tuple[EvaluationCase, ...]:
@@ -80,10 +82,11 @@ async def evaluate(
     for case in cases:
         service.evaluation_catalog = case.catalog
         photo = base64.b64decode(case.photo_base64, validate=True) if case.photo_base64 else None
+        context_date = datetime.now(UTC).date()
         result = await service.interpret(
             request_key=f"eval:{run_id}:{case.id}",
             text=case.text,
-            local_date=datetime.now(UTC).date(),
+            local_date=context_date,
             photo=photo,
         )
         summary["cases"] += 1
@@ -96,7 +99,18 @@ async def evaluate(
         summary["clarifications"] += int(result.proposal.intent == "clarify")
         actual = normalized_fields(result.proposal.items)
         expected = normalized_fields(case.expected_items)
-        correct = int(result.proposal.intent == case.expected_intent and actual == expected)
+        expected_date = (
+            context_date if case.expected_local_date == "context" else case.expected_local_date
+        )
+        correct = int(
+            result.proposal.intent == case.expected_intent
+            and actual == expected
+            and result.proposal.local_date == expected_date
+            and (
+                case.expected_label is None
+                or result.proposal.label.strip().casefold() == case.expected_label.casefold()
+            )
+        )
         summary["correct"] += correct
         summary[f"{category}_correct"] += correct
     return summary

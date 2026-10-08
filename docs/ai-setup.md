@@ -51,17 +51,19 @@ Before each attempt, reserve its conservative maximum in integer micro-USD. Shar
 
 Send one Telegram meal photo outside an album. Downloads and actual bytes are bounded to 2 MB, JPEG/PNG and 1600 pixels per side. The image is sent only to an activated route and remains in memory during interpretation; this increment does not archive local raw photo copies. A photograph never creates authoritative nutrient data or proves a weighed portion. Unresolved portions remain unresolved; visible portions are proposals for explicit review.
 
-AI accounting stores no prompts, raw model responses or photo bytes. Temporary structured outcomes are consumed in the same transaction that creates a draft or processes a rejection; crash-left outcomes are purged after seven days. Existing inbox/draft retention also applies. Historical accounting retains only minimal request IDs, route IDs, attempt status, timestamps and costs. This does not govern Telegram or provider copies.
+Displayed and saved draft provenance uses fixed application wording; model-written labels are limited to canonical meal names and model-written explanation prose is discarded, so nutrient claims cannot hide in those fields. AI accounting stores no prompts, raw model responses or photo bytes. Temporary structured outcomes are consumed in the same transaction that creates a draft or processes a rejection; crash-left outcomes are purged after seven days. Existing inbox/draft retention also applies. Historical accounting retains only minimal request IDs, route IDs, attempt status, timestamps and costs. This does not govern Telegram or provider copies.
 
 Before a sole worker starts, `AiService.recover_abandoned()` marks interrupted requests as unknown, retains their reserved spending/invocation counts and prevents duplicate inference. Do not run that recovery against a different active worker. Application networking always occurs outside database write transactions.
 
 ## Synthetic evaluation
 
-Mocked contract tests run offline in CI. A separate opt-in runner accepts only explicitly marked synthetic cases; it neither saves meals nor approves drafts. Input files supply synthetic catalogs and expected typed intents, never real meal history. Without `--live`, it only validates the fixture file and makes zero external requests. `--role meal_text` or `--role meal_photo` selects one group. Summary accuracy compares exact food-version IDs and integer milligrams, accepting numerically equivalent gram spellings while preserving the quantity threshold.
+Mocked contract tests run offline in CI. A separate opt-in runner accepts only explicitly marked synthetic cases; it neither saves meals nor approves drafts. Input files supply synthetic catalogs and expected typed intents, never real meal history. Without `--live`, it only validates the fixture file and makes zero external requests. `--role meal_text` or `--role meal_photo` selects one group. Summary accuracy compares intent, exact food-version IDs, integer milligrams, the specified/context local date and known canonical meal labels. Numerically equivalent gram spellings are accepted without relaxing the quantity threshold.
 
 ```sh
 uv run python -m nutrition_bot.application.ai_evaluation \
   --cases evals/ai_meal_cases.jsonl --run-id synthetic-review
 ```
+
+The additional 17 mixed-food text cases in `evals/ai_text_mixed_cases.jsonl` cover raw/cooked alternatives, multiple items, decimal weights, missing portions and hostile instructions. Keep strict expectation mismatches visible; explicitly unresolved gram quantities may satisfy uncertainty preservation only after reviewing the exact proposed identities and known amounts. Passing the clear-input percentage alone does not pass the ambiguity gate.
 
 A live run additionally needs `--live` and either `--manifest` plus the dedicated key in its environment, or `--chatgpt-credentials` and `--chatgpt-policy`. It uses the existing application's migrated accounting database. Every OpenRouter attempt counts against both the shared monthly budget and a persistent maximum of $1 for that evaluation run identifier. ChatGPT evaluations count against the independent daily invocation quota. No live evaluation or endpoint promotion is implied by passing mocked tests; representative text and image accuracy must be reviewed before activating real inputs.
