@@ -30,7 +30,7 @@ Repository = "https://github.com/rserag/bite-club"
 Issues = "https://github.com/rserag/bite-club/issues"
 
 [dependency-groups]
-dev = ["pytest>=8.3,<10", "pytest-asyncio>=1,<2", "ruff>=0.11,<1", "mypy>=1.15,<2"]
+dev = ["pytest>=8.3,<10", "pytest-asyncio>=1,<2", "ruff>=0.11,<1", "mypy>=1.15,<3"]
 e2e = [
     "telethon>=1.45,<2",
 ]
