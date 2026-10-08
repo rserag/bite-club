@@ -34,7 +34,7 @@ jobs:
           bash -n deploy/bite-club-deploy deploy/bite-club-deploy-ssh
           shellcheck deploy/bite-club-deploy deploy/bite-club-deploy-ssh
           sudo install -d -m 0755 /opt/bite-club
-          sudo install -m 0600 .env.example /opt/bite-club/runtime.env
+          sudo install -m 0600 -o "$(id -u)" -g "$(id -g)" .env.example /opt/bite-club/runtime.env
           BOT_IMAGE=ghcr.io/example/bot@sha256:0000000000000000000000000000000000000000000000000000000000000000 docker compose --file deploy/compose.yml config --quiet
       - name: Install checksum-pinned restic for synthetic local restore tests
         run: |
