@@ -271,9 +271,12 @@ class AiService:
         measurement: _InterpretationMetrics | None = None,
     ) -> AiOutcome:
         role: AiRole = "meal_photo" if photo is not None else "meal_text"
-        if not 1 <= len(request_key) <= 128 or (
-            self.evaluation_prefix is not None
+        if (
+            not 1 <= len(request_key) <= 128
+            or self.evaluation_prefix is not None
             and not request_key.startswith(self.evaluation_prefix)
+            or self.evaluation_prefix is None
+            and request_key.startswith("eval:")
         ):
             raise ValueError("The AI request key is invalid.")
         if not self.enabled_for(role):
@@ -455,15 +458,25 @@ class AiService:
                 ):
                     return AiOutcome(request_key=request_key, role=role, status="unknown")
                 day = datetime.now(UTC).date().isoformat()
+                evaluation_pool = self.evaluation_prefix is not None
+                is_evaluation = sa.func.substr(ai_plan_invocations.c.request_key, 1, 5) == "eval:"
                 count = int(
                     await connection.scalar(
                         sa.select(sa.func.count())
                         .select_from(ai_plan_invocations)
-                        .where(ai_plan_invocations.c.day == day)
+                        .where(
+                            ai_plan_invocations.c.day == day,
+                            is_evaluation if evaluation_pool else ~is_evaluation,
+                        )
                     )
                     or 0
                 )
-                if count >= self.plan_adapter.policy.daily_invocation_limit:
+                limit = (
+                    self.plan_adapter.policy.daily_evaluation_invocation_limit
+                    if evaluation_pool
+                    else self.plan_adapter.policy.daily_invocation_limit
+                )
+                if count >= limit:
                     return AiOutcome(request_key=request_key, role=role, status="quota")
                 await connection.execute(
                     sa.insert(ai_requests).values(

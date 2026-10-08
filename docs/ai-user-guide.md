@@ -129,6 +129,13 @@ same description while waiting. Failed/unknown attempts can still use the
 allowance, and an unknown result is not automatically retried. There is no
 automatic switch to a paid provider.
 
+The default bot allowance is 100 ChatGPT attempts per UTC day, with the next
+day beginning at **00:00 UTC**. Operator-run validation has its own app allowance
+of 100 attempts and cannot use the bot's pool. Both still share the selected
+ChatGPT account's provider limits, so provider access can be unavailable even
+before the bot reaches 100. A new day does not automatically retry an earlier
+message or approve a draft.
+
 Telegram can deliver an update twice or display a duplicate bot reply. Replayed
 updates and repeated taps cannot save the same action twice. Sending another
 new message is a separate request, however, and can create a separate draft or

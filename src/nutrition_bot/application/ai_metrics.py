@@ -302,7 +302,12 @@ def _summarize(rows: list[sqlite3.Row]) -> dict[str, Any]:
 
 
 def metrics_summary(
-    database_path: Path, *, days: int = 3, now: float | None = None
+    database_path: Path,
+    *,
+    days: int = 3,
+    now: float | None = None,
+    bot_daily_limit: int | None = None,
+    evaluation_daily_limit: int | None = None,
 ) -> dict[str, Any]:
     """Read a bounded rolling UTC window without acquiring the worker/migration lock.
 
@@ -311,6 +316,9 @@ def metrics_summary(
     """
     if type(days) is not int or not 1 <= days <= 30:
         raise ValueError("Choose 1–30 days")
+    for limit, minimum in ((bot_daily_limit, 1), (evaluation_daily_limit, 0)):
+        if limit is not None and (type(limit) is not int or not minimum <= limit <= 100):
+            raise ValueError("Invalid daily invocation limit")
     end = time.time() if now is None else now
     if not math.isfinite(end) or end < 0:
         raise ValueError("Invalid report time")
@@ -338,6 +346,21 @@ def metrics_summary(
                 datetime.fromtimestamp(end, UTC).date().isoformat(),
             ),
         ).fetchall()
+        current_day = datetime.fromtimestamp(end, UTC).date().isoformat()
+        current_counts = next((row for row in plan_days if row["day"] == current_day), None)
+        pools: dict[str, dict[str, int | bool | None]] = {}
+        for pool, ledger_field, limit in (
+            ("bot", "normal", bot_daily_limit),
+            ("evaluation", "evaluation", evaluation_daily_limit),
+        ):
+            used = current_counts[ledger_field] if current_counts is not None else 0
+            pools[pool] = {
+                "used": used,
+                "limit": limit,
+                "remaining": max(0, limit - used) if limit is not None else None,
+                "over_limit": used > limit if limit is not None else None,
+                "over_limit_by": max(0, used - limit) if limit is not None else None,
+            }
         return {
             "days": days,
             "from_utc": datetime.fromtimestamp(start, UTC).isoformat(),
@@ -346,6 +369,7 @@ def metrics_summary(
             "normal_input_scope": "eligible_original_free_text_and_photo_inputs",
             "subscription_invocations_scope": "full_utc_days_overlapping_window",
             "subscription_invocations": [dict(row) for row in plan_days],
+            "current_day_invocations": {"day": current_day, "pools": pools},
             "sources": {
                 source: _summarize([row for row in rows if row["source"] == source])
                 for source in ("normal", "evaluation")

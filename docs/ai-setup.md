@@ -37,7 +37,42 @@ A private `ChatGPTPlanPolicy` file must explicitly enable the route, confirm the
 
 Requests verify the account's public model catalog, use only `https://api.openai.com/v1/responses`, and send `store:false`, `stream:true`, explicit context and no tools. Only a terminal `response.completed` event with a complete locally validated intent is accepted. When the preview's terminal output is empty, completed `response.output_item.done` snapshots are assembled by unique contiguous output indices; partial deltas, tool items, conflicting terminal output and events after completion are rejected. [Responses stream events](https://developers.openai.com/api/reference/resources/responses/streaming-events). The preview rejects `temperature` and `max_output_tokens`, so this integration makes no promise of a server-enforced output-token cap. A 30-second attempt timeout and bounded response bytes protect this application, while actual plan usage follows OpenAI account limits. [Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference), [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
 
-The app separately counts subscription invocations, with an operator-configured maximum of 100 per UTC day. This count is not a dollar charge. Failed or interrupted attempts consume that invocation allowance and are not automatically repeated. Plan requests never debit the OpenRouter dollar ledger. OpenRouter remains an independently configured option; there is no automatic paid fallback from a failed ChatGPT request.
+The app counts subscription invocations in two independently enforced daily
+pools: **bot use** and **validation/evaluation**. In the private policy,
+`daily_invocation_limit` sets the bot cap and
+`daily_evaluation_invocation_limit` sets the validation cap. Both default to 100:
+
+```json
+{
+  "daily_invocation_limit": 100,
+  "daily_evaluation_invocation_limit": 100
+}
+```
+
+This is a policy fragment, not a complete activation policy. The pools use UTC
+calendar days and reset their available allowance at **00:00 UTC**. Validation
+calls cannot consume the app's bot pool; unused allowance cannot be borrowed
+from the other pool. Existing invocation history is preserved when upgrading,
+including earlier validation calls. If a pool already has 100 attempts today,
+it remains exhausted until the next UTC day.
+
+These are application limits, not separate OpenAI account quotas or guaranteed
+provider capacity. Both pools still use the same selected ChatGPT account and
+share that account's actual provider limits. An account-level limit can block
+either pool even while its app allowance remains. The counts are not dollar
+charges. Failed, interrupted and unknown attempts stay accounted for in their
+original pool and are not automatically repeated. Plan requests never debit the
+OpenRouter dollar ledger. OpenRouter remains an independently configured
+option; there is no automatic paid fallback from a failed ChatGPT request.
+
+Run bot traffic and validations against the **same durable accounting database**.
+Selecting a new or empty database is not a quota reset or an additional
+allowance: it only hides the prior accounting. Once credentials have been
+transferred for activation, the VM owns their rotating refreshes; use the
+operator's VM procedure rather than reusing that session concurrently on the
+laptop. The read-only [measurement report](ai-measurements.md) can show each
+pool's current UTC-day use and, with an explicitly selected policy file, its
+configured cap and remaining app allowance.
 
 ## OpenRouter configuration
 
@@ -70,4 +105,14 @@ uv run python -m nutrition_bot.application.ai_evaluation \
 
 The additional 17 mixed-food text cases in `evals/ai_text_mixed_cases.jsonl` cover raw/cooked alternatives, multiple items, decimal weights, missing portions and hostile instructions. Keep strict expectation mismatches visible; explicitly unresolved gram quantities may satisfy uncertainty preservation only after reviewing the exact proposed identities and known amounts. Passing the clear-input percentage alone does not pass the ambiguity gate.
 
-A live run additionally needs `--live` and either `--manifest` plus the dedicated key in its environment, or `--chatgpt-credentials` and `--chatgpt-policy`. It uses the existing application's migrated accounting database. Every OpenRouter attempt counts against both the shared monthly budget and a persistent maximum of $1 for that evaluation run identifier. ChatGPT evaluations count against the independent daily invocation quota. No live evaluation or endpoint promotion is implied by passing mocked tests; representative text and image accuracy must be reviewed before activating real inputs.
+A live run additionally needs `--live` and either `--manifest` plus the dedicated
+key in its environment, or `--chatgpt-credentials` and `--chatgpt-policy`. It uses
+the existing application's migrated accounting database. Every OpenRouter
+attempt counts against both the shared monthly budget and a persistent maximum
+of $1 for that evaluation run identifier. ChatGPT evaluations count against the
+daily **validation** pool, including diagnostic calls and failed/unknown
+attempts. They do not reduce the application's bot-use allowance, but still
+share the ChatGPT account's provider limits. No live evaluation or endpoint
+promotion is implied by passing mocked tests; representative text and image
+accuracy must be reviewed before activating real inputs. Separating the pools
+does not pass an evaluation gate or turn AI on.

@@ -25,6 +25,22 @@ opens SQLite in read-only mode, makes no external calls, and does not expire dra
 or update any application state. Run the explicit migration before using it on an
 older schema. Keep any saved output private.
 
+To include the configured daily caps and remaining app allowance, explicitly
+select your private ChatGPT policy file:
+
+```sh
+uv run nutrition-bot ai-metrics --days 3 \
+  --chatgpt-policy private/chatgpt-policy.json
+```
+
+For Compose, use `--chatgpt-policy` with the policy's path inside the container.
+The path above is an example; choose your existing reviewed policy. This option
+reads and validates local policy configuration only. It does not read credentials,
+contact the provider or enable AI. Without this option, the report still shows
+usage counts, but configured caps, remaining allowance and over-limit fields are
+`null`. It does not infer caps from environment variables or assume the defaults
+match the active deployment.
+
 ## Reading the summary
 
 - `sources.normal` and `sources.evaluation` separate everyday use from explicit
@@ -51,9 +67,18 @@ older schema. Keep any saved output private.
   full UTC days overlapping the rolling window, separating normal and evaluation
   use. The first day's count can include invocations before the rolling window
   began. `subscription_invocations_scope` makes this distinction explicit. It is
-  not the provider account's
-  remaining allowance or billing statement. Unknown or interrupted invocations
-  remain accounted for.
+  not the provider account's remaining allowance or billing statement. Unknown or
+  interrupted invocations remain accounted for.
+- `current_day_invocations` reports the whole current UTC day, independently of
+  the rolling window. `day` identifies the UTC date, and `pools.bot` and
+  `pools.evaluation` each contain `used`, `limit`, `remaining`, `over_limit` and
+  `over_limit_by`. `used` counts all attempt states, including failed/unknown
+  attempts, and the evaluation pool includes every validation run identifier.
+  With an explicit policy, `remaining` is the nonnegative difference between the
+  selected cap and use; `over_limit` is true only when use exceeds the cap, and
+  `over_limit_by` is the excess. Being exactly at the cap means zero remaining
+  without being over it. Historical use is preserved if a configured cap changes.
+  Without a selected policy, these fields other than `used` are unknown.
 - `drafts` reads current open/saved/cancelled/expired states for requests started
   in the selected window. Saved drafts are classified as unchanged or edited by
   comparing their final revision with the first displayed revision. An edit that
@@ -65,6 +90,19 @@ older schema. Keep any saved output private.
   setting; it does not certify a particular provider default.
 
 ## Collecting a useful baseline
+
+The app defaults to separate caps of **100 bot attempts** and **100 validation
+attempts** per UTC day. Validation cannot consume the bot's app pool, and neither
+pool can borrow unused allowance from the other. Both pools still share the
+selected ChatGPT account's real provider limits; these counts do not establish
+provider availability. The next day starts at **00:00 UTC**, regardless of the
+diary timezone. Separating the pools does not erase previous validation attempts,
+reset a full pool or pass an accuracy gate.
+
+Use the same durable accounting database for bot traffic and validations. A new
+or separate database would omit previous usage; it does not authorize an extra
+allowance. Retain existing history and unknown attempts when migrating or
+reviewing usage.
 
 Keep the model, prompt, schema and reasoning settings stable during the first
 collection period, and use the bot normally. Avoid adding diagnostic inference

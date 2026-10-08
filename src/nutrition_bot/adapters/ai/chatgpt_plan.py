@@ -44,6 +44,7 @@ class ChatGPTPlanPolicy(FrozenModel):
     meal_photo_model: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]{0,100}$")
     image_capability_reviewed: bool = Field(default=False, strict=True)
     daily_invocation_limit: int = Field(default=100, strict=True, ge=1, le=100)
+    daily_evaluation_invocation_limit: int = Field(default=100, strict=True, ge=0, le=100)
 
     def check(self, role: AiRole) -> str:
         today = datetime.now(UTC).date()
