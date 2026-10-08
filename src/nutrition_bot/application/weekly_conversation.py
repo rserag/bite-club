@@ -3,6 +3,7 @@ from datetime import date
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from nutrition_bot.application.meal_conversation import MealReply
+from nutrition_bot.application.settings_service import load_preferences
 from nutrition_bot.application.weekly_report import (
     WeeklyRequest,
     WeeklyRequestError,
@@ -29,6 +30,11 @@ async def handle_weekly_message(
         return MealReply(str(exc), "weekly_report_help")
     if request is None:
         return None
+    normalized = " ".join(text.casefold().replace("’", "'").split())
+    explicit_view = any(token in {"full", "short"} for token in normalized.split())
+    if not explicit_view:
+        preferences = await load_preferences(connection)
+        request = WeeklyRequest(request.end, short=preferences.report_length == "short")
     return _reply(await build_weekly_report(connection, request), request)
 
 

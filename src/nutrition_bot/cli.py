@@ -46,8 +46,53 @@ async def run(settings: BotSettings) -> None:
         loop.add_signal_handler(signum, stop.set)
     store = Store(settings)
     try:
-        async with Bot(settings.telegram_bot_token.get_secret_value()) as bot:
-            await run_worker(Service(store, settings), TelegramGateway(bot), stop)
+        from nutrition_bot.application.ai_service import AiService
+
+        ai_service = AiService(store)
+        if settings.llm_provider == "openrouter":
+            if not settings.openrouter_api_key or not settings.ai_endpoint_manifest:
+                raise ValueError("OpenRouter needs a private key and reviewed endpoint manifest")
+            from nutrition_bot.adapters.ai.openrouter import OpenRouterAdapter
+            from nutrition_bot.domain.ai_policy import load_manifest
+
+            ai_service = AiService(
+                store,
+                load_manifest(settings.ai_endpoint_manifest),
+                OpenRouterAdapter(settings.openrouter_api_key),
+            )
+        elif settings.llm_provider == "chatgpt":
+            if not settings.chatgpt_credentials_path or not settings.chatgpt_policy_path:
+                raise ValueError("ChatGPT needs app-owned credentials and a reviewed plan policy")
+            from nutrition_bot.adapters.ai.chatgpt_plan import ChatGPTPlanAdapter, load_plan_policy
+
+            ai_service = AiService(
+                store,
+                plan_adapter=ChatGPTPlanAdapter(
+                    settings.chatgpt_credentials_path,
+                    load_plan_policy(settings.chatgpt_policy_path),
+                ),
+            )
+        try:
+            await ai_service.recover_abandoned()
+            async with Bot(settings.telegram_bot_token.get_secret_value()) as bot:
+                gateway = TelegramGateway(bot)
+                if settings.miniapp_enabled and not settings.miniapp_url:
+                    raise ValueError("Configure the HTTPS Mini App URL")
+                service = Service(store, settings, ai_service)
+                runner = None
+                try:
+                    if settings.miniapp_enabled:
+                        from nutrition_bot.miniapp.server import start_miniapp
+
+                        runner = await start_miniapp(
+                            service, host=settings.miniapp_host, port=settings.miniapp_port
+                        )
+                    await run_worker(service, gateway, stop)
+                finally:
+                    if runner is not None:
+                        await runner.cleanup()
+        finally:
+            await ai_service.close()
     finally:
         await store.close()
         for signum in (signal.SIGINT, signal.SIGTERM):

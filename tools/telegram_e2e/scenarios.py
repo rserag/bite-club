@@ -64,11 +64,11 @@ def ledger(env: Environment, meals: int, revisions: int) -> None:
 
 async def test_smoke_start_status(e2e: tuple[Driver, Environment]) -> None:
     driver, env = e2e
-    await driver.send("/start", "Your private nutrition diary is ready")
+    await driver.send("/start", "What would you like to do?")
     status = await driver.send("/status", "Nutrition diary is running")
     await env.delivered(status)
     await driver.click(status, "Refresh status", "Nutrition diary is running")
-    await driver.send("/start", "Your private nutrition diary is ready")
+    await driver.send("/start", "What would you like to do?")
     assert env.read("SELECT count(*) FROM profile") == [(1,)]
 
 

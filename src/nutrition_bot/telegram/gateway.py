@@ -11,7 +11,16 @@ from aiogram.exceptions import (
     TelegramServerError,
     TelegramUnauthorizedError,
 )
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonWebApp,
+    Message,
+    Update,
+    WebAppInfo,
+)
 
 
 class RetryableError(Exception):
@@ -30,6 +39,10 @@ class FatalGatewayError(Exception):
 class Gateway(Protocol):
     async def preflight(self) -> None: ...
 
+    async def configure_menu(self, chat_id: int) -> None: ...
+
+    async def configure_miniapp(self, chat_id: int, url: str) -> None: ...
+
     async def poll(self, offset: int) -> list[Update]: ...
 
     async def send_message(
@@ -39,6 +52,8 @@ class Gateway(Protocol):
         button_token: str | None,
         buttons: list[dict[str, str]] | None = None,
     ) -> int: ...
+
+    async def download_photo(self, message: Message) -> bytes: ...
 
     async def answer_callback(self, callback_id: str, text: str) -> None: ...
 
@@ -67,6 +82,36 @@ class TelegramGateway:
         except TelegramAPIError as exc:
             raise self.translate(exc) from None
 
+    async def configure_menu(self, chat_id: int) -> None:
+        try:
+            await self.bot.set_my_commands(
+                [
+                    BotCommand(command=command, description=description)
+                    for command, description in (
+                        ("home", "Open daily menu"),
+                        ("today", "Today's progress"),
+                        ("favorites", "Saved meals"),
+                        ("week", "Weekly report"),
+                        ("settings", "Preferences and reminders"),
+                        ("help", "Help and setup"),
+                    )
+                ],
+                scope=BotCommandScopeChat(chat_id=chat_id),
+                request_timeout=15,
+            )
+        except TelegramAPIError as exc:
+            raise self.translate(exc) from None
+
+    async def configure_miniapp(self, chat_id: int, url: str) -> None:
+        try:
+            await self.bot.set_chat_menu_button(
+                chat_id=chat_id,
+                menu_button=MenuButtonWebApp(text="Open diary", web_app=WebAppInfo(url=url)),
+                request_timeout=15,
+            )
+        except TelegramAPIError as exc:
+            raise self.translate(exc) from None
+
     async def poll(self, offset: int) -> list[Update]:
         try:
             return await self.bot.get_updates(
@@ -92,8 +137,9 @@ class TelegramGateway:
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(text=item["text"], callback_data=item["callback_data"])
-                        for item in buttons
+                        for item in buttons[start : start + 3]
                     ]
+                    for start in range(0, len(buttons), 3)
                 ]
             )
         elif button_token:
@@ -113,6 +159,11 @@ class TelegramGateway:
             return message.message_id
         except TelegramAPIError as exc:
             raise self.translate(exc) from None
+
+    async def download_photo(self, message: Message) -> bytes:
+        from nutrition_bot.adapters.ai.photos import download_meal_photo
+
+        return await download_meal_photo(self.bot, message)
 
     async def answer_callback(self, callback_id: str, text: str) -> None:
         try:

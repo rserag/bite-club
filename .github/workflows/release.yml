@@ -1,9 +1,11 @@
-name: Bite Club manual image release
+name: Bite Club release and deploy
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       confirm_publish:
-        description: Publish this main commit to GHCR after all checks
+        description: Publish and deploy this main commit after all checks
         required: true
         type: boolean
         default: false
@@ -14,15 +16,17 @@ concurrency:
   cancel-in-progress: false
 jobs:
   checks:
-    if: github.ref == 'refs/heads/main' && inputs.confirm_publish
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.confirm_publish)
     uses: ./.github/workflows/ci.yml
   security:
-    if: github.ref == 'refs/heads/main' && inputs.confirm_publish
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.confirm_publish)
     uses: ./.github/workflows/security.yml
   publish:
     needs: [checks, security]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      image: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -54,6 +58,12 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           sbom: true
           provenance: mode=max
+      - name: Smoke-test the exact published image
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "$IMAGE"
+          bash scripts/container-smoke.sh "$IMAGE"
       - name: Scan the exact published digest before marking it eligible
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -71,4 +81,38 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           printf 'Source commit: `%s`\n\nVerified image: `%s@%s`\n\n' "$SOURCE_SHA" "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
-          printf 'SBOM and build provenance are attached to the image. Deployment remains operator-initiated.\n' >> "$GITHUB_STEP_SUMMARY"
+          printf 'SBOM and build provenance are attached to the image. Protected production deployment follows.\n' >> "$GITHUB_STEP_SUMMARY"
+  deploy:
+    name: Deploy production
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: bite-club-production
+      cancel-in-progress: false
+    steps:
+      - name: Install restricted deployment credentials
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+      - name: Deploy verified immutable image
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+        run: |
+          [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
+          [[ $IMAGE =~ ^ghcr\.io/rserag/bite-club@sha256:[0-9a-f]{64}$ ]]
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 -i "$HOME/.ssh/id_ed25519" -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "release $GITHUB_SHA $IMAGE"
+      - name: Remove deployment key
+        if: always()
+        run: rm -f "$HOME/.ssh/id_ed25519"

@@ -3,7 +3,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
@@ -24,9 +24,22 @@ from nutrition_bot.adapters.database.schema import (
     profile,
 )
 from nutrition_bot.adapters.database.store import Store
-from nutrition_bot.application.meal_conversation import MealReply, handle_callback, handle_message
+from nutrition_bot.application.meal_conversation import MealReply, handle_message
 from nutrition_bot.config import BotSettings
 from nutrition_bot.telegram.auth import authorized
+
+if TYPE_CHECKING:
+    from nutrition_bot.application.ai_service import AiService
+    from nutrition_bot.domain.ai import AiOutcome
+    from nutrition_bot.telegram.gateway import Gateway
+
+
+@dataclass
+class _NeedsAi(Exception):
+    update_id: int
+    message: Message
+    reference: datetime
+
 
 MAX_PENDING_UPDATES = 1000
 MAX_PENDING_REPLIES = 1000
@@ -44,9 +57,11 @@ class _HeartbeatProgress:
 
 
 class Service:
-    def __init__(self, store: Store, settings: BotSettings):
+    def __init__(self, store: Store, settings: BotSettings, ai_service: "AiService | None" = None):
         self.store = store
         self.settings = settings
+        self.ai_service = ai_service
+        self.gateway: Gateway | None = None
         self._heartbeat_lock = asyncio.Lock()
         self._heartbeat_progress: dict[str, _HeartbeatProgress] = {}
 
@@ -54,7 +69,12 @@ class Service:
         async with self.store.engine.connect() as connection:
             return int(await connection.scalar(sa.select(cursor.c.next_offset)) or 0)
 
-    async def accept(self, updates: list[Update]) -> None:
+    async def accept_internal(self, updates: list[Update]) -> None:
+        if any(update.update_id >= 0 for update in updates):
+            raise ValueError("Internal update IDs must be negative")
+        await self.accept(updates, advance_cursor=False)
+
+    async def accept(self, updates: list[Update], *, advance_cursor: bool = True) -> None:
         if not updates:
             return
         async with self.store.write() as connection:
@@ -84,6 +104,8 @@ class Service:
                         .on_conflict_do_nothing(index_elements=["update_id"])
                     )
                     pending += 1
+            if not advance_cursor:
+                return
             next_offset = max(update.update_id for update in updates) + 1
             await connection.execute(
                 insert(cursor)
@@ -118,12 +140,58 @@ class Service:
             "weekly reports use /week; conservative calorie reviews use /adjust; "
             "quick gym/BJJ logs use /gym and /bjj, with optional session details; "
             "BJJ plans, recovery check-ins and /load workload guidance are available. "
-            "Reviewed training allocation uses /allocation; food suggestions and reminders "
-            "are not yet available.\n"
-            "AI is disabled; no paid calls are made."
+            "Reviewed training allocation uses /allocation. Open /home for buttons and "
+            "/settings to configure optional reminders. Food suggestions are not yet available.\n"
+            + (
+                "AI is disabled; no paid calls are made."
+                if not self.ai_service
+                or not (
+                    self.ai_service.enabled_for("meal_text")
+                    or self.ai_service.enabled_for("meal_photo")
+                )
+                else "AI draft interpretation is enabled; saving still requires your review."
+            )
         )
 
     async def process_one(self) -> bool:
+        prepared: dict[int, AiOutcome] = {}
+        while True:
+            try:
+                return await self._process_one(prepared)
+            except _NeedsAi as request:
+                assert self.ai_service is not None
+                photo = None
+                if request.message.photo:
+                    if self.gateway is None:
+                        from nutrition_bot.domain.ai import AiOutcome
+
+                        prepared[request.update_id] = AiOutcome(
+                            status="unavailable",
+                            request_key=str(request.update_id),
+                            role="meal_photo",
+                        )
+                        continue
+                    try:
+                        photo = await self.gateway.download_photo(request.message)
+                    except Exception:
+                        from nutrition_bot.domain.ai import AiOutcome
+
+                        prepared[request.update_id] = AiOutcome(
+                            status="unavailable",
+                            request_key=str(request.update_id),
+                            role="meal_photo",
+                        )
+                        continue
+                prepared[request.update_id] = await self.ai_service.interpret(
+                    request_key=str(request.update_id),
+                    text=request.message.text
+                    or request.message.caption
+                    or "Interpret this meal photo.",
+                    local_date=request.reference.date(),
+                    photo=photo,
+                )
+
+    async def _process_one(self, prepared: dict[int, "AiOutcome"]) -> bool:
         # All processing is a local transaction. A crash leaves this row pending;
         # no in-progress inbox lease needs reclaiming and no network occurs here.
         async with self.store.write() as connection:
@@ -171,11 +239,12 @@ class Service:
                 message = callback.message
                 assert isinstance(message, Message)
                 parts = (callback.data or "").split(":")
+                valid_ui = len(parts) == 3 and parts[0] == "ui" and parts[1].isdigit()
                 valid_status = len(parts) == 2 and parts[0] == "status"
                 valid_meal = (
                     len(parts) == 3
                     and parts[0] == "meal"
-                    and parts[1] in {"edit", "delete", "undo"}
+                    and parts[1] in {"edit", "repeat", "save", "delete", "undo"}
                 )
                 valid_draft = (
                     len(parts) == 3
@@ -203,7 +272,7 @@ class Service:
                 valid_daily = (
                     len(parts) == 3
                     and parts[0] == "daily"
-                    and parts[1] in {"complete", "incomplete", "add"}
+                    and parts[1] in {"complete", "incomplete", "add", "full", "short"}
                 )
                 valid_weekly = (
                     len(parts) == 3 and parts[0] == "weekly" and parts[1] in {"short", "full"}
@@ -235,6 +304,7 @@ class Service:
                 )
                 if not (
                     valid_status
+                    or valid_ui
                     or valid_meal
                     or valid_draft
                     or valid_favorite
@@ -273,7 +343,24 @@ class Service:
                     await self._finish(connection, update.update_id, "rejected", clear=True)
                     return True
                 button_payload = button["payload"]
-                if (
+                if valid_ui:
+                    allowed = [
+                        item.get("callback_data")
+                        for item in button_payload.get("buttons", [])
+                        if isinstance(item, dict)
+                    ]
+                    requests = button_payload.get("ui_requests")
+                    index = int(parts[1])
+                    if (
+                        callback.data not in allowed
+                        or not isinstance(requests, list)
+                        or index >= len(requests)
+                        or not isinstance(requests[index], str)
+                    ):
+                        await self._finish(connection, update.update_id, "rejected", clear=True)
+                        return True
+                    callback_action = requests[index]
+                elif (
                     valid_meal
                     or valid_draft
                     or valid_favorite
@@ -380,7 +467,9 @@ class Service:
                     return True
                 key = f"callback:{callback.id}"
                 command = (
-                    "supplement_plan_callback"
+                    "ui_callback"
+                    if valid_ui
+                    else "supplement_plan_callback"
                     if valid_supplement_plan
                     else "supplement_callback"
                     if valid_supplement
@@ -450,36 +539,37 @@ class Service:
                 await connection.execute(
                     insert(profile)
                     .values(id=1, timezone=self.settings.app_timezone, created_at=time.time())
-                    .on_conflict_do_nothing(index_elements=["id"])
+                    .on_conflict_do_nothing(index_elements=[profile.c.id])
                 )
-                text = (
-                    "Your private nutrition diary is ready.\n"
-                    "Use /foods to find a saved food, then log measured amounts: "
-                    "'I ate 150g rice'.\n"
-                    "Reply to meal receipts to correct, delete or undo them. /meal shows help; "
-                    "/meals shows recent meals; /today shows daily totals "
-                    "(/today short for a quick view); /status checks the connection.\n"
-                    "Rough amounts create drafts: use /drafts to resume or approve an estimate. "
-                    "Save meals with 'save as usual breakfast' as a receipt reply; "
-                    "use /favorites, /eat and /aliases for shortcuts, or /recipe for batches. "
-                    "Use /goal setup for a reviewed calorie and macro starting plan. "
-                    "Send 'weight 79.4' or use /weight for trend coverage. "
-                    "Use /week or /week short for the last seven calendar dates. "
-                    "Use /adjust for a conservative evidence-based calorie review. "
-                    "Quick gym/BJJ logs use /gym and /bjj; optional sets use /gym details. "
-                    "Optional BJJ details, plans and recovery check-ins are available; /load "
-                    "shows conservative workload guidance. Log an exact creatine dose such as "
-                    "'creatine 5 g'; /supplement shows supplement help. Reminders and AI are not "
-                    "available yet."
-                )
-                kind = "start"
+                from nutrition_bot.application.navigation import home
+
+                result = home()
+                text, kind = result.text, "start"
             elif command == "/status":
                 text, kind = await self._status(connection), "status"
             else:
                 # Rejected user edits roll back any partially built ledger revision while
                 # preserving the rejection action/response in the surrounding transaction.
                 async with connection.begin_nested() as savepoint:
-                    if command == "supplement_plan_callback":
+                    if command == "ui_callback":
+                        from nutrition_bot.application.navigation import ui_action
+
+                        timezone = await connection.scalar(
+                            sa.select(profile.c.timezone).where(profile.c.id == 1)
+                        )
+                        result = await ui_action(
+                            connection,
+                            callback_action,
+                            message,
+                            action_key=key,
+                            reference=datetime.fromtimestamp(
+                                row["received_at"], ZoneInfo(timezone or self.settings.app_timezone)
+                            ),
+                            bot_id=self.settings.bot_id,
+                            owner_id=self.settings.allowed_telegram_user_id,
+                            retention_days=self.settings.raw_input_retention_days,
+                        )
+                    elif command == "supplement_plan_callback":
                         from nutrition_bot.application.supplement_plan_conversation import (
                             handle_plan_callback,
                         )
@@ -647,27 +737,100 @@ class Service:
                             action_key=key,
                         )
                     elif command == "meal_callback":
-                        result = await handle_callback(
+                        from nutrition_bot.application.navigation import meal_action
+
+                        timezone = await connection.scalar(
+                            sa.select(profile.c.timezone).where(profile.c.id == 1)
+                        )
+                        result = await meal_action(
                             connection,
                             callback_action,
                             button_payload["meal_id"],
                             button_payload["meal_revision_id"],
+                            message,
                             action_key=key,
+                            reference=datetime.fromtimestamp(
+                                row["received_at"], ZoneInfo(timezone or self.settings.app_timezone)
+                            ),
+                            bot_id=self.settings.bot_id,
+                            owner_id=self.settings.allowed_telegram_user_id,
+                            retention_days=self.settings.raw_input_retention_days,
                         )
                     else:
                         timezone = await connection.scalar(
                             sa.select(profile.c.timezone).where(profile.c.id == 1)
                         )
-                        result = await handle_message(
-                            connection,
-                            message,
-                            action_key=key,
-                            timezone=timezone or self.settings.app_timezone,
-                            bot_id=self.settings.bot_id,
-                            owner_id=self.settings.allowed_telegram_user_id,
-                            edited=update.edited_message is not None,
-                            retention_days=self.settings.raw_input_retention_days,
+                        reference = datetime.fromtimestamp(
+                            row["received_at"], ZoneInfo(timezone or self.settings.app_timezone)
                         )
+                        # A delayed Telegram update keeps the day on which the
+                        # user sent it, just like deterministic meal parsing.
+                        message_reference = message.date.astimezone(reference.tzinfo)
+                        from nutrition_bot.application.navigation import ui_message
+                        from nutrition_bot.application.settings_conversation import (
+                            handle_settings_message,
+                        )
+
+                        result = None
+                        if not update.edited_message:
+                            result = await handle_settings_message(
+                                connection,
+                                message.text or "",
+                                action_key=key,
+                                now=row["received_at"],
+                                default_timezone=self.settings.app_timezone,
+                            )
+                            if result is None:
+                                result = await ui_message(
+                                    connection,
+                                    message,
+                                    action_key=key,
+                                    reference=reference,
+                                    bot_id=self.settings.bot_id,
+                                    owner_id=self.settings.allowed_telegram_user_id,
+                                    retention_days=self.settings.raw_input_retention_days,
+                                )
+                        if result is None and row["update_id"] in prepared:
+                            from nutrition_bot.application.ai_service import create_ai_draft
+
+                            result = await create_ai_draft(
+                                connection,
+                                prepared[row["update_id"]],
+                                message,
+                                action_key=key,
+                                reference=message_reference,
+                            )
+                        if result is None:
+                            if (
+                                message.photo
+                                and self.ai_service
+                                and self.ai_service.enabled_for("meal_photo")
+                                and not update.edited_message
+                                and not message.reply_to_message
+                            ):
+                                raise _NeedsAi(row["update_id"], message, message_reference)
+                            result = await handle_message(
+                                connection,
+                                message,
+                                action_key=key,
+                                timezone=timezone or self.settings.app_timezone,
+                                bot_id=self.settings.bot_id,
+                                owner_id=self.settings.allowed_telegram_user_id,
+                                edited=update.edited_message is not None,
+                                retention_days=self.settings.raw_input_retention_days,
+                            )
+                    if (
+                        result.kind == "meal_rejected"
+                        and self.ai_service
+                        and self.ai_service.enabled_for("meal_text")
+                        and row["update_id"] not in prepared
+                        and not callback
+                        and not update.edited_message
+                        and not message.reply_to_message
+                        and bool(message.text)
+                        and not (message.text or "").lstrip().startswith("/")
+                    ):
+                        raise _NeedsAi(row["update_id"], message, message_reference)
                     if result.kind in {
                         "meal_rejected",
                         "allocation_rejected",
@@ -681,6 +844,10 @@ class Service:
                     }:
                         await savepoint.rollback()
                 text, kind = result.text, result.kind
+            if row["update_id"] in prepared:
+                from nutrition_bot.application.ai_budget import consume_ai_outcome
+
+                await consume_ai_outcome(connection, str(row["update_id"]))
             # Newly associated expired references may contain quoted raw copies.
             # Purge before inserting this response so an expiry explanation can be sent.
             await expire_drafts(connection, now=time.time())
@@ -694,7 +861,8 @@ class Service:
                 or (
                     result
                     and (
-                        result.meal_id
+                        result.ui_buttons
+                        or result.meal_id
                         or result.draft_id
                         or result.favorite_id
                         or result.recipe_id
@@ -714,12 +882,21 @@ class Service:
             if result and result.meal_id:
                 payload.update(meal_id=result.meal_id, meal_revision_id=result.revision_id)
                 payload["buttons"] = [
-                    {"text": name.capitalize(), "callback_data": f"meal:{name}:{reply_token}"}
+                    {
+                        "text": {"save": "Save favorite", "repeat": "Repeat"}.get(
+                            name, name.capitalize()
+                        ),
+                        "callback_data": f"meal:{name}:{reply_token}",
+                    }
                     for name in result.buttons
                 ]
             elif result and result.draft_id:
                 payload.update(draft_id=result.draft_id, draft_revision=result.draft_revision)
-                labels = {"approve": "Approve estimate", "edit": "Enter amount", "cancel": "Cancel"}
+                labels = {
+                    "approve": "Approve draft" if result.review_required else "Approve estimate",
+                    "edit": "Enter amount",
+                    "cancel": "Cancel",
+                }
                 payload["buttons"] = [
                     {"text": labels[name], "callback_data": f"draft:{name}:{reply_token}"}
                     for name in result.buttons
@@ -765,6 +942,8 @@ class Service:
                     "complete": "All food logged",
                     "incomplete": "Incomplete",
                     "add": "Add something",
+                    "full": "Details",
+                    "short": "Short version",
                 }
                 payload["buttons"] = [
                     {"text": labels[name], "callback_data": f"daily:{name}:{reply_token}"}
@@ -825,7 +1004,13 @@ class Service:
                     {"text": labels[name], "callback_data": f"supplement:{name}:{reply_token}"}
                     for name in result.buttons
                 ]
-            if result is not None and not result.buttons:
+            if result and result.ui_buttons:
+                payload["ui_requests"] = [request for _, request in result.ui_buttons]
+                payload["buttons"] = [
+                    {"text": label, "callback_data": f"ui:{i}:{reply_token}"}
+                    for i, (label, _) in enumerate(result.ui_buttons)
+                ]
+            if result is not None and not result.buttons and not result.ui_buttons:
                 payload.pop("buttons", None)
                 reply_token = None
             await self._reply(connection, key, "message", payload, reply_token)
@@ -944,12 +1129,44 @@ class Service:
                 .first()
             )
             if row:
+                from nutrition_bot.runtime.scheduler import guard_scheduled_reply
+
+                if not await guard_scheduled_reply(connection, row, self.settings, now=time.time()):
+                    return None
+                row = (
+                    (await connection.execute(sa.select(outbox).where(outbox.c.id == row["id"])))
+                    .mappings()
+                    .one()
+                )
                 await connection.execute(
                     sa.update(outbox)
                     .where(outbox.c.id == row["id"])
                     .values(status="sending", attempts=row["attempts"] + 1)
                 )
             return row
+
+    async def prepare_reply(self, row: RowMapping) -> RowMapping | None:
+        from nutrition_bot.runtime.scheduler import guard_scheduled_reply
+
+        async with self.store.write() as connection:
+            current = (
+                (await connection.execute(sa.select(outbox).where(outbox.c.id == row["id"])))
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                current is None
+                or current["status"] != "sending"
+                or not await guard_scheduled_reply(
+                    connection, current, self.settings, now=time.time()
+                )
+            ):
+                return None
+            return (
+                (await connection.execute(sa.select(outbox).where(outbox.c.id == row["id"])))
+                .mappings()
+                .one()
+            )
 
     async def finish_reply(
         self,
@@ -977,6 +1194,15 @@ class Service:
         cutoff = time.time() - self.settings.raw_input_retention_days * 86400
         async with self.store.write() as connection:
             await expire_drafts(connection, now=time.time())
+            from nutrition_bot.adapters.database.schema_ui import ui_flows
+            from nutrition_bot.application.ai_budget import purge_ai_outcomes
+
+            await purge_ai_outcomes(connection, now=time.time())
+            await connection.execute(
+                sa.update(ui_flows)
+                .where(ui_flows.c.updated_at < time.time() - 1800, ui_flows.c.stage != "idle")
+                .values(stage="idle", payload={}, revision=ui_flows.c.revision + 1)
+            )
             await connection.execute(
                 sa.delete(food_source_cache).where(food_source_cache.c.expires_at <= time.time())
             )

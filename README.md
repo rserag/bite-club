@@ -20,7 +20,7 @@ Bite Club makes those cases part of the design:
 | Explicit approval of the exact draft revision; stale buttons cannot approve edited estimates | [Draft conversation](src/nutrition_bot/application/draft_conversation.py), [approval tests](tests/test_telegram_drafts.py) |
 | Missing data stays visible; reports distinguish recorded amounts from complete intake | [Daily totals](src/nutrition_bot/adapters/database/daily.py), [nutrient screening](src/nutrition_bot/domain/nutrient_gaps.py) |
 | Real-user Telegram testing against a separate bot and disposable database | [E2E runner](tools/telegram_e2e), [architecture and trade-offs](docs/telegram-e2e-design.md) |
-| A constrained deployment: one process, no inbound port, non-root container, persistent SQLite | [Dockerfile](Dockerfile), [operations](docs/foundation-operations.md), [deployment runbook](docs/manual-deployment.md) |
+| A constrained deployment: one process, optional authenticated HTTPS dashboard, non-root container, persistent SQLite | [Dockerfile](Dockerfile), [operations](docs/foundation-operations.md), [deployment runbook](docs/manual-deployment.md) |
 
 The project is in active development. The implementation is substantially ahead of a transport demo; it is also **not the entire planned assistant**. The source is the product of iterative development with AI coding assistance, explicit product decisions, and executable acceptance checks. [Engineering notes](docs/engineering.md) explain the choices and trade-offs.
 
@@ -39,6 +39,11 @@ The demo exercises the actual application service with **synthetic food values**
 
 ## What works today
 
+- **Daily navigation:** a short home menu, topic help, guided catalog/portion entry, favorite/recent shortcuts and receipt actions; short reports with detail toggles.
+- **Optional reminders:** editable timezone, quiet hours, category switches, weight/recovery prompts, training-relative reminders and daily/weekly summaries. All categories start disabled.
+- **Optional Mini App:** authenticated mobile dashboard, food search, measured meal forms, history editing and recorded-energy charts; requires configured HTTPS ingress.
+- **Optional AI drafts:** app-owned ChatGPT plan OAuth or policy-restricted OpenRouter interpretation of meal text/photos; disabled until private setup and evaluation. Every AI proposal needs review before saving.
+
 - **Food diary:** measured meals, reviewed food sources, USDA lookup/cache, corrections, delete/undo, food aliases, favorites, repeats and batch recipes.
 - **Approval workflow:** persistent rough-portion drafts, version-specific approval, expiry and safe handling of stale buttons or edited messages.
 - **Goals and trends:** reviewed calorie/macro targets, weight history, daily/weekly reports and evidence-gated adjustment proposals.
@@ -47,7 +52,7 @@ The demo exercises the actual application service with **synthetic food values**
 - **Supplements:** reviewed creatine products, actual intake, phased regimens, dose marks and separate exposure/adherence reports. General nutrient-product entry is not yet available in Telegram.
 - **Nutrient review:** versioned adult DRI references, explicit group selection, food/supplement separation, source-specific limits and conservative two-week intake screening.
 
-Next increments include verified-food suggestions, reminders, optional AI/photo interpretation, exports and automatic encrypted backups. Planned behavior is documented separately from implemented behavior. No paid AI integration is active.
+Next increments include verified-food suggestions, packaged-food label/barcode workflows, broader historical AI questions, exports and automatic encrypted backups. Planned behavior is documented separately from implemented behavior. AI providers are optional and disabled in the public configuration; live deployment activation is separate.
 
 Operator-run [backup and restore tools](docs/backup-and-restore.md) provide consistent SQLite snapshots, encrypted restic upload/retention, and isolated restore verification. Scheduling and an actual off-site recovery drill remain separate work.
 
@@ -67,7 +72,7 @@ flowchart LR
     E[Real-user E2E driver] -. dedicated test bot .-> T
 ```
 
-The worker owns four loops: receive, process, send and cleanup. SQLite runs in WAL mode with foreign keys and full synchronous writes. Network delivery is not exactly-once: a crash after Telegram accepts a reply can produce a repeated reply, while the application action remains idempotent. That boundary is documented and tested.
+The worker owns five loops: receive, process, send, cleanup and reminder scheduling. SQLite runs in WAL mode with foreign keys and full synchronous writes. Network delivery is not exactly-once: a crash after Telegram accepts a reply can produce a repeated reply, while the application action remains idempotent. That boundary is documented and tested.
 
 The app is single-user, not a multi-tenant hosted service. A second account does not get an independent ledger. Telegram remains part of the data path; self-hosting is not end-to-end privacy from Telegram.
 
@@ -90,7 +95,7 @@ docker compose run --rm bot migrate
 docker compose up -d
 ```
 
-The runtime uses a persistent named volume, read-only root filesystem, dropped capabilities and a 512 MiB memory limit. See the [deployment runbook](docs/manual-deployment.md) for migration, backup and rollback procedures. Automatic encrypted backups and automated deployment are future work.
+The runtime uses a persistent named volume, read-only root filesystem, dropped capabilities and a 512 MiB memory limit. See [everyday use](docs/everyday-use.md) and the [deployment runbook](docs/manual-deployment.md) for migration, backup and rollback procedures. Automatic encrypted backups remain future work. [Continuous deployment](docs/continuous-deployment.md) builds, verifies and deploys immutable images after production approval.
 
 ## Test the rules, not just the happy path
 
@@ -101,7 +106,7 @@ uv run --group e2e mypy
 uv run --group e2e pytest tests tools/telegram_e2e/tests -q
 ```
 
-The offline suite contains **over 1,300 tests**, including real database migrations, crash/replay cases, exact arithmetic, stale approvals and an offline Telegram double. CI runs offline checks plus a container persistence/migration smoke test. Hosted CI results will be visible in [Actions](https://github.com/rserag/bite-club/actions) after publication; local results are not a substitute for a hosted run.
+The offline suite contains **over 1,300 tests**, including real database migrations, crash/replay cases, exact arithmetic, stale approvals and an offline Telegram double. CI runs offline checks plus a container persistence/migration smoke test. Hosted CI results are available in [Actions](https://github.com/rserag/bite-club/actions); local results are not a substitute for a hosted run.
 
 A separate development runner signs in as a real Telegram test user using Telethon. It talks to a **dedicated test bot**, starts a disposable worker/database per scenario, checks replies and ledger effects, and writes private reports. The ten-scenario regression suite includes restart, corrections, approval, supplements and nutrient coverage. Live tests require deliberate private setup and are excluded from ordinary CI. [Setup and commands](docs/telegram-e2e.md).
 

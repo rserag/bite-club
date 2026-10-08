@@ -241,7 +241,7 @@ def render_weekly(
     if not short:
         lines.extend(_micronutrient_lines(days))
     lines.append("Incomplete and unknown dates are excluded rather than counted as zero.")
-    lines.append(f"Full report: /week {end}" if short else f"Short report: /week {end} short")
+    lines.append(f"Full report: /week {end} full" if short else f"Short report: /week {end} short")
     return "\n".join(lines)
 
 

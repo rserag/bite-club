@@ -9,9 +9,11 @@ COPY migrations ./migrations
 RUN uv sync --frozen --no-dev --no-editable --compile-bytecode
 
 FROM build AS test
+RUN apk add --no-cache bash
 RUN uv sync --frozen --no-editable
 COPY tests ./tests
 COPY scripts ./scripts
+COPY deploy ./deploy
 ENV PYTHONDONTWRITEBYTECODE=1
 CMD ["/app/.venv/bin/pytest", "-q", "-p", "no:cacheprovider"]
 

@@ -65,6 +65,7 @@ async def test_daily_view_uses_historical_target_and_discloses_partial_macro_dat
         "All food logged",
         "Incomplete",
         "Add something",
+        "Details",
     }
     historic = await process(service, store, message(3, "/today yesterday"))
     assert "No calorie or macro target was effective" in historic["payload"]["text"]

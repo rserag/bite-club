@@ -33,6 +33,12 @@ async def receiver(service: Service, gateway: Gateway, stop: asyncio.Event) -> N
         try:
             if not checked:
                 await gateway.preflight()
+                await gateway.configure_menu(service.settings.allowed_telegram_chat_id)
+                if service.settings.miniapp_enabled:
+                    assert service.settings.miniapp_url is not None
+                    await gateway.configure_miniapp(
+                        service.settings.allowed_telegram_chat_id, service.settings.miniapp_url
+                    )
                 checked = True
             updates = await gateway.poll(await service.offset())
         except RetryableError as exc:
@@ -63,6 +69,9 @@ async def send_one(service: Service, gateway: Gateway) -> bool:
     row = await service.claim_reply()
     if row is None:
         return False
+    row = await service.prepare_reply(row)
+    if row is None:
+        return True
     if (
         row["chat_id"] != service.settings.allowed_telegram_chat_id
         or row["owner_user_id"] != service.settings.allowed_telegram_user_id
@@ -83,7 +92,7 @@ async def send_one(service: Service, gateway: Gateway) -> bool:
             else:
                 if (
                     not isinstance(buttons, list)
-                    or not 1 <= len(buttons) <= 3
+                    or not 1 <= len(buttons) <= 12
                     or any(
                         not isinstance(item, dict)
                         or not isinstance(item.get("text"), str)
@@ -101,7 +110,7 @@ async def send_one(service: Service, gateway: Gateway) -> bool:
                 raise RejectedError()
             await gateway.answer_callback(payload["callback_id"], payload["text"])
     except RetryableError as exc:
-        attempts = row["attempts"] + 1
+        attempts = row["attempts"]
         await service.finish_reply(
             row["id"],
             "failed" if attempts >= 8 else "queued",
@@ -128,6 +137,15 @@ async def sender(service: Service, gateway: Gateway, stop: asyncio.Event) -> Non
             await pause(service, "sender", stop, 0.5)
 
 
+async def scheduler(service: Service, stop: asyncio.Event) -> None:
+    from nutrition_bot.runtime.scheduler import scheduler_tick
+
+    while not stop.is_set():
+        await service.pulse("scheduler")
+        await scheduler_tick(service.store, service.settings, now=time.time())
+        await pause(service, "scheduler", stop, 15)
+
+
 async def cleanup(service: Service, stop: asyncio.Event) -> None:
     while not stop.is_set():
         await service.pulse("cleanup")
@@ -136,6 +154,7 @@ async def cleanup(service: Service, stop: asyncio.Event) -> None:
 
 
 async def run_worker(service: Service, gateway: Gateway, stop: asyncio.Event) -> None:
+    service.gateway = gateway
     await service.store.check_schema()
     await service.recover_outbox()
     for component in COMPONENTS:
@@ -148,6 +167,7 @@ async def run_worker(service: Service, gateway: Gateway, stop: asyncio.Event) ->
                 group.create_task(processor(service, stop)),
                 group.create_task(sender(service, gateway, stop)),
                 group.create_task(cleanup(service, stop)),
+                group.create_task(scheduler(service, stop)),
             ]
             await stop.wait()
             for task in tasks:

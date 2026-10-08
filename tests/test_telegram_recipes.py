@@ -81,7 +81,7 @@ async def test_cooked_portion_keeps_batch_masses_and_scales_nutrients_only(servi
     text = result["payload"]["text"].lower()
     assert "300" in text and "portion" in text
     assert "ingredient" in text and "equivalent" in text
-    report = await process(service, store, message(3, "/today"))
+    report = await process(service, store, message(3, "/today full"))
     assert "135 kcal" in report["payload"]["text"]
     assert "Calcium: unknown" in report["payload"]["text"]
     assert "calculated recipe" in report["payload"]["text"].lower()

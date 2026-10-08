@@ -1,0 +1,4 @@
+/.github/ @rserag
+/deploy/ @rserag
+/Dockerfile @rserag
+/docker-compose.yml @rserag

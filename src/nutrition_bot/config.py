@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, field_validator
@@ -57,6 +58,39 @@ class BotSettings(StorageSettings):
     telegram_bot_token: SecretStr
     allowed_telegram_user_id: int = Field(gt=0)
     allowed_telegram_chat_id: int = Field(gt=0)
+
+    llm_provider: Literal["disabled", "openrouter", "chatgpt"] = "disabled"
+    openrouter_api_key: SecretStr | None = None
+    ai_endpoint_manifest: Path | None = None
+    chatgpt_credentials_path: Path | None = None
+    chatgpt_policy_path: Path | None = None
+    miniapp_enabled: bool = False
+    miniapp_host: str = "127.0.0.1"
+    miniapp_port: int = Field(default=8080, ge=1024, le=65535)
+    miniapp_url: str | None = None
+
+    @field_validator("miniapp_url")
+    @classmethod
+    def https_miniapp(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("Use an HTTPS Mini App URL without credentials or query parameters")
+        return value
+
+    @field_validator("openrouter_api_key", mode="before")
+    @classmethod
+    def empty_ai_key(cls, value: object) -> object:
+        return None if value == "" else value
 
     @field_validator("telegram_bot_token")
     @classmethod

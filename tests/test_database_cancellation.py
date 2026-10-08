@@ -4,6 +4,7 @@ import threading
 
 import aiosqlite
 import pytest
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 
 @pytest.mark.parametrize("cancel_count", [1, 3])
@@ -133,3 +134,61 @@ async def test_cancelled_write_is_rolled_back_and_next_write_succeeds(store):
     async with store.engine.connect() as connection:
         result = await connection.exec_driver_sql("SELECT value FROM cancellation_probe")
         assert result.scalars().all() == [2]
+
+
+@pytest.mark.parametrize("stage", ["connection", "begin"])
+@pytest.mark.parametrize("cancel_count", [1, 3])
+async def test_cancelled_write_startup_retains_lock_until_cleanup(
+    store, monkeypatch, stage, cancel_count
+):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    blocked = False
+    original_start = AsyncConnection.start
+    original_execute = AsyncConnection.exec_driver_sql
+
+    async def block_once():
+        nonlocal blocked
+        if not blocked:
+            blocked = True
+            entered.set()
+            await release.wait()
+
+    async def delayed_start(connection, *args, **kwargs):
+        result = await original_start(connection, *args, **kwargs)
+        if stage == "connection":
+            await block_once()
+        return result
+
+    async def delayed_execute(connection, statement, *args, **kwargs):
+        result = await original_execute(connection, statement, *args, **kwargs)
+        if stage == "begin" and statement == "BEGIN IMMEDIATE":
+            await block_once()
+        return result
+
+    monkeypatch.setattr(AsyncConnection, "start", delayed_start)
+    monkeypatch.setattr(AsyncConnection, "exec_driver_sql", delayed_execute)
+
+    async def write():
+        async with store.write():
+            pytest.fail("Cancelled startup must not reach the caller")
+
+    task = asyncio.create_task(write())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        for _ in range(cancel_count):
+            task.cancel()
+            await asyncio.sleep(0)
+        # Allow cancellation cleanup to run; startup is deliberately still held.
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        assert store.writer_lock.locked()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        assert not store.writer_lock.locked()
+        async with store.write() as connection:
+            assert (await connection.exec_driver_sql("SELECT 1")).scalar_one() == 1
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)

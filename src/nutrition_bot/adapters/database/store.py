@@ -40,14 +40,60 @@ class Store:
 
     @asynccontextmanager
     async def write(self) -> AsyncIterator[AsyncConnection]:
-        async with self.writer_lock, self.engine.connect() as connection:
-            await connection.exec_driver_sql("BEGIN IMMEDIATE")
+        async with self.writer_lock:
+            # Acquisition includes asynchronous connection hooks and a queued
+            # SQLite BEGIN. Cancellation must not abandon either stage before
+            # the database handle and its write lock have been released.
+            async def begin() -> AsyncConnection:
+                connection = await self.engine.connect()
+                try:
+                    await connection.exec_driver_sql("BEGIN IMMEDIATE")
+                except BaseException:
+                    await connection.close()
+                    raise
+                return connection
+
+            starting = asyncio.create_task(begin())
+            try:
+                connection = await asyncio.shield(starting)
+            except asyncio.CancelledError:
+
+                async def discard() -> None:
+                    try:
+                        connection = await starting
+                    except Exception:
+                        return
+                    try:
+                        await connection.rollback()
+                    finally:
+                        await connection.close()
+
+                cleanup = asyncio.create_task(discard())
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        continue
+                cleanup.result()
+                raise
+
             try:
                 yield connection
                 await connection.commit()
-            except BaseException:
-                await connection.rollback()
-                raise
+            finally:
+                # close rolls back an uncommitted transaction. Join its cleanup
+                # before releasing the writer lock, even under repeated stops.
+                closing = asyncio.create_task(connection.close())
+                try:
+                    await asyncio.shield(closing)
+                except asyncio.CancelledError:
+                    while not closing.done():
+                        try:
+                            await asyncio.shield(closing)
+                        except asyncio.CancelledError:
+                            continue
+                    closing.result()
+                    raise
 
     async def check_schema(self) -> None:
         async with self.engine.connect() as connection:
