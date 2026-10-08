@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec sudo -n /usr/local/sbin/bite-club-deploy --request "${SSH_ORIGINAL_COMMAND-}"

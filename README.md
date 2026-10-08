@@ -90,7 +90,7 @@ docker compose run --rm bot migrate
 docker compose up -d
 ```
 
-The runtime uses a persistent named volume, read-only root filesystem, dropped capabilities and a 512 MiB memory limit. See the [deployment runbook](docs/manual-deployment.md) for migration, backup and rollback procedures. Automatic encrypted backups and automated deployment are future work.
+The runtime uses a persistent named volume, read-only root filesystem, dropped capabilities and a 512 MiB memory limit. See the [deployment runbook](docs/manual-deployment.md) for migration, backup and rollback procedures. Automatic encrypted backups remain future work. [Continuous deployment](docs/continuous-deployment.md) builds, verifies and deploys immutable images after production approval.
 
 ## Test the rules, not just the happy path
 
@@ -101,7 +101,7 @@ uv run --group e2e mypy
 uv run --group e2e pytest tests tools/telegram_e2e/tests -q
 ```
 
-The offline suite contains **over 1,300 tests**, including real database migrations, crash/replay cases, exact arithmetic, stale approvals and an offline Telegram double. CI runs offline checks plus a container persistence/migration smoke test. Hosted CI results will be visible in [Actions](https://github.com/rserag/bite-club/actions) after publication; local results are not a substitute for a hosted run.
+The offline suite contains **over 1,300 tests**, including real database migrations, crash/replay cases, exact arithmetic, stale approvals and an offline Telegram double. CI runs offline checks plus a container persistence/migration smoke test. Hosted CI results are available in [Actions](https://github.com/rserag/bite-club/actions); local results are not a substitute for a hosted run.
 
 A separate development runner signs in as a real Telegram test user using Telethon. It talks to a **dedicated test bot**, starts a disposable worker/database per scenario, checks replies and ledger effects, and writes private reports. The ten-scenario regression suite includes restart, corrections, approval, supplements and nutrient coverage. Live tests require deliberate private setup and are excluded from ordinary CI. [Setup and commands](docs/telegram-e2e.md).
 
