@@ -23,6 +23,7 @@ from nutrition_bot.adapters.database.schema_drafts import meal_drafts
 from nutrition_bot.application.ai_metrics import link_draft, metrics_summary, record_metric
 from nutrition_bot.cli import main, migrate
 from nutrition_bot.runtime.lock import database_lock
+from tests.test_chatgpt_plan_ai import policy
 from tests.test_draft_storage import DAY, NOW, action, proposed
 from tests.test_food_storage import reviewed_food
 
@@ -268,6 +269,204 @@ async def test_subscription_counts_include_full_overlapping_utc_days(store, sett
     ]
 
 
+async def test_current_utc_day_pool_usage_counts_all_states_and_preserves_legacy_history(
+    store, settings
+):
+    async with store.write() as connection:
+        for prefix in ("synthetic-bot-", "eval:synthetic:"):
+            for state in ("started", "done", "unknown"):
+                key = prefix + state
+                await connection.execute(
+                    sa.insert(ai_requests).values(
+                        request_key=key,
+                        role="meal_text",
+                        state="done",
+                        created_at=NOW,
+                    )
+                )
+                await connection.execute(
+                    sa.insert(ai_plan_invocations).values(
+                        request_key=key,
+                        day="2024-01-15",
+                        state=state,
+                        created_at=NOW,
+                    )
+                )
+        key = "eval:legacy:previous-day"
+        await connection.execute(
+            sa.insert(ai_requests).values(
+                request_key=key,
+                role="meal_text",
+                state="unknown",
+                created_at=NOW - 86400,
+            )
+        )
+        await connection.execute(
+            sa.insert(ai_plan_invocations).values(
+                request_key=key,
+                day="2024-01-14",
+                state="unknown",
+                created_at=NOW - 86400,
+            )
+        )
+    with database_lock(settings.database_path):
+        with closing(sqlite3.connect(settings.database_path)) as db:
+            before = db.execute("SELECT * FROM ai_plan_invocations ORDER BY id").fetchall()
+        report = metrics_summary(
+            settings.database_path,
+            days=3,
+            now=NOW,
+            bot_daily_limit=100,
+            evaluation_daily_limit=100,
+        )
+        with closing(sqlite3.connect(settings.database_path)) as db:
+            assert db.execute("SELECT * FROM ai_plan_invocations ORDER BY id").fetchall() == before
+    assert report["current_day_invocations"] == {
+        "day": "2024-01-15",
+        "pools": {
+            pool: {
+                "used": 3,
+                "limit": 100,
+                "remaining": 97,
+                "over_limit": False,
+                "over_limit_by": 0,
+            }
+            for pool in ("bot", "evaluation")
+        },
+    }
+    assert report["subscription_invocations"] == [
+        {"day": "2024-01-14", "normal": 0, "evaluation": 1, "total": 1},
+        {"day": "2024-01-15", "normal": 3, "evaluation": 3, "total": 6},
+    ]
+    tomorrow = metrics_summary(
+        settings.database_path,
+        days=1,
+        now=NOW + 86400,
+        bot_daily_limit=100,
+        evaluation_daily_limit=100,
+    )
+    assert all(
+        pool["used"] == 0 and pool["remaining"] == 100
+        for pool in tomorrow["current_day_invocations"]["pools"].values()
+    )
+
+
+async def test_current_day_limits_remain_unknown_without_selected_configuration(store, settings):
+    async with store.write() as connection:
+        await connection.execute(
+            sa.insert(ai_requests).values(
+                request_key="eval:legacy:unknown",
+                role="meal_text",
+                state="unknown",
+                created_at=NOW,
+            )
+        )
+        await connection.execute(
+            sa.insert(ai_plan_invocations).values(
+                request_key="eval:legacy:unknown",
+                day="2024-01-15",
+                state="unknown",
+                created_at=NOW,
+            )
+        )
+    pools = metrics_summary(settings.database_path, now=NOW)["current_day_invocations"]["pools"]
+    assert pools["bot"] == {
+        "used": 0,
+        "limit": None,
+        "remaining": None,
+        "over_limit": None,
+        "over_limit_by": None,
+    }
+    assert pools["evaluation"] == {**pools["bot"], "used": 1}
+
+
+async def test_exhausted_and_over_limit_pools_report_without_reset_or_borrowing(store, settings):
+    async with store.write() as connection:
+        requests = [
+            {
+                "request_key": f"synthetic-bot-{index}",
+                "role": "meal_text",
+                "state": "unknown",
+                "created_at": NOW,
+            }
+            for index in range(101)
+        ]
+        requests.append(
+            {
+                "request_key": "eval:legacy:one",
+                "role": "meal_text",
+                "state": "unknown",
+                "created_at": NOW,
+            }
+        )
+        await connection.execute(sa.insert(ai_requests), requests)
+        await connection.execute(
+            sa.insert(ai_plan_invocations),
+            [
+                {
+                    "request_key": row["request_key"],
+                    "day": "2024-01-15",
+                    "state": "unknown",
+                    "created_at": NOW,
+                }
+                for row in requests
+            ],
+        )
+    report = metrics_summary(
+        settings.database_path,
+        now=NOW,
+        bot_daily_limit=100,
+        evaluation_daily_limit=1,
+    )
+    pools = report["current_day_invocations"]["pools"]
+    assert pools["bot"] == {
+        "used": 101,
+        "limit": 100,
+        "remaining": 0,
+        "over_limit": True,
+        "over_limit_by": 1,
+    }
+    assert pools["evaluation"] == {
+        "used": 1,
+        "limit": 1,
+        "remaining": 0,
+        "over_limit": False,
+        "over_limit_by": 0,
+    }
+    zero_validation = metrics_summary(
+        settings.database_path,
+        now=NOW,
+        bot_daily_limit=100,
+        evaluation_daily_limit=0,
+    )
+    assert zero_validation["current_day_invocations"]["pools"]["evaluation"] == {
+        "used": 1,
+        "limit": 0,
+        "remaining": 0,
+        "over_limit": True,
+        "over_limit_by": 1,
+    }
+    assert report["subscription_invocations"][0]["total"] == 102
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"bot_daily_limit": 0},
+        {"bot_daily_limit": 101},
+        {"bot_daily_limit": True},
+        {"evaluation_daily_limit": -1},
+        {"evaluation_daily_limit": 101},
+        {"evaluation_daily_limit": False},
+        {"evaluation_daily_limit": 1.5},
+    ],
+)
+def test_report_rejects_invalid_pool_caps_before_reading_database(settings, limits):
+    with pytest.raises(ValueError):
+        metrics_summary(settings.database_path, **limits)
+    assert not settings.database_path.exists()
+
+
 async def test_draft_outcomes_use_original_revision_and_survive_content_purge(store, settings):
     async with store.write() as connection:
         food = await publish_reviewed_food(connection, reviewed_food())
@@ -388,12 +587,81 @@ def test_cli_metrics_needs_no_telegram_secrets_and_does_not_take_worker_lock(
     monkeypatch.setenv("DATABASE_URL", migrated.resolved_database_url)
     monkeypatch.setattr("sys.argv", ["nutrition-bot", "ai-metrics", "--days", "3"])
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("CHATGPT_POLICY_PATH", "/missing/policy-must-not-be-read.json")
+    monkeypatch.setattr("nutrition_bot.cli.configure_logging", lambda *_: None)
     with database_lock(migrated.database_path):
         main()
     output = json.loads(capsys.readouterr().out)
     assert output["days"] == 3
     assert output["sources"]["normal"]["requests"] == 0
     assert output["sources"]["normal"]["usage"]["input_tokens"]["total"] is None
+    assert output["current_day_invocations"]["pools"]["bot"]["limit"] is None
+
+
+def test_cli_metrics_explicit_policy_supplies_caps_without_signin_or_network(
+    migrated, monkeypatch, capsys, tmp_path
+):
+    policy_path = tmp_path / "synthetic-policy.json"
+    policy_path.write_text(
+        policy(
+            daily_invocation_limit=80,
+            daily_evaluation_invocation_limit=40,
+        ).model_dump_json()
+    )
+    monkeypatch.setenv("DATABASE_URL", migrated.resolved_database_url)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setattr("nutrition_bot.cli.configure_logging", lambda *_: None)
+
+    def credentials_must_not_be_read(*_):
+        pytest.fail("read-only reporting must not read credentials")
+
+    monkeypatch.setattr(
+        "nutrition_bot.adapters.ai.chatgpt_auth.load_credentials", credentials_must_not_be_read
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "nutrition-bot",
+            "ai-metrics",
+            "--chatgpt-policy",
+            str(policy_path),
+        ],
+    )
+    with database_lock(migrated.database_path):
+        main()
+    pools = json.loads(capsys.readouterr().out)["current_day_invocations"]["pools"]
+    assert pools["bot"] == {
+        "used": 0,
+        "limit": 80,
+        "remaining": 80,
+        "over_limit": False,
+        "over_limit_by": 0,
+    }
+    assert pools["evaluation"] == {**pools["bot"], "limit": 40, "remaining": 40}
+
+
+def test_cli_metrics_invalid_selected_policy_fails_without_disclosing_content(
+    migrated, monkeypatch, capsys, tmp_path, caplog
+):
+    policy_path = tmp_path / "synthetic-invalid-policy.json"
+    policy_path.write_text('{"private account credential":"DO-NOT-DISCLOSE"}')
+    monkeypatch.setenv("DATABASE_URL", migrated.resolved_database_url)
+    monkeypatch.setattr("nutrition_bot.cli.configure_logging", lambda *_: None)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "nutrition-bot",
+            "ai-metrics",
+            "--chatgpt-policy",
+            str(policy_path),
+        ],
+    )
+    with pytest.raises(SystemExit) as caught:
+        main()
+    assert caught.value.code == 1
+    output = capsys.readouterr()
+    assert "DO-NOT-DISCLOSE" not in output.out + output.err + caplog.text
+    assert "private account credential" not in output.out + output.err + caplog.text
 
 
 def test_metrics_migration_upgrade_from_previous_schema_and_downgrade(settings):
