@@ -1,4 +1,4 @@
-# Security checks and manual image releases
+# Security checks and image releases
 
 The security workflow scans reachable public Git history with pinned Gitleaks and
 redacted output, audits all locked runtime/development dependencies with pip-audit,
@@ -35,11 +35,11 @@ Revalidate these checks and the image scan when changing the base digest.
 
 ## Release eligibility
 
-The release workflow is manual-only, requires the `main` branch and the explicit
-`confirm_publish` input. It reruns offline/container checks and security checks
-before a job with package-write permission publishes an image. It has no production
-SSH keys, bot token or deployment step. No image is published just because main or
-a dependency PR changes.
+The release workflow runs on `main` pushes or explicit dispatch with
+`confirm_publish` enabled. It reruns offline/container checks and security checks
+before a job with package-write permission publishes an image. Only the subsequent
+protected production job receives the restricted deployment SSH key. Bot credentials
+remain on the host and are never available to build or pull-request jobs.
 
 The current workflow builds `linux/amd64`; verify your destination architecture
 before using it. ARM64 release validation must be added before using these images
@@ -50,11 +50,10 @@ checks that exact published digest; if it fails, the uploaded candidate is **not
 eligible for deployment**. Only a successful run records a verified image reference
 in its summary. Rebuilding the same commit may produce a different digest.
 
-Before the first real release, publish/review the workflow, run it on hosted CI,
-verify registry permissions and artifact attestations, then deliberately dispatch
-publication. Local workflow validation does not prove GHCR publication or hosted
-release success. Newly added security checks should become required main checks
-after their first successful hosted run.
+Verify hosted checks, registry permissions and artifact attestations before
+approving production deployment. Local workflow validation does not prove GHCR
+publication or hosted release success. Security checks should remain required main
+checks after their first successful hosted run.
 
 ## Deployment and rollback
 
@@ -68,5 +67,12 @@ Record the old and new digests, snapshot identifier, source revisions, schema
 revisions, health result and restore evidence in private operational notes. Keep
 the matching previous image and verified database snapshot. If the schema is not
 backward-compatible, image-only rollback is unsafe. Preserve any newer records before
-restoring old state. No workflow automatically rolls back, changes a VM, migrates
-hosts, or activates scheduled backups.
+restoring old state. The protected workflows deploy and request schema-compatible rollback through a
+restricted host controller. Host migration and scheduled off-site backup activation
+remain separate operator work.
+
+## Continuous deployment
+
+The protected release pipeline and restricted host controller are documented in
+[continuous-deployment.md](continuous-deployment.md). Merges to main now publish
+verified immutable images and queue production deployment for owner approval.

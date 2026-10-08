@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+readonly root=/opt/bite-club
+readonly volume=nutrition-bot_bot-data
+readonly current="$root/state/current.env"
+readonly previous="$root/state/previous.env"
+
+die() { printf '[bite-club-deploy] %s\n' "$*" >&2; exit 1; }
+validate_revision() { [[ $1 =~ ^[0-9a-f]{40}$ ]] || die 'Invalid revision'; }
+validate_image() { [[ $1 =~ ^ghcr\.io/rserag/bite-club@sha256:[0-9a-f]{64}$ ]] || die 'Invalid image'; }
+
+read_release() {
+  local first second extra
+  [[ -f $1 && ! -L $1 ]] || die 'Release record is missing'
+  { IFS= read -r first; IFS= read -r second; extra=$(cat); } < "$1"
+  [[ $first == DEPLOYED_REVISION=* && $second == BOT_IMAGE=* && -z $extra ]] || die 'Invalid release record'
+  revision=${first#DEPLOYED_REVISION=}
+  image=${second#BOT_IMAGE=}
+  validate_revision "$revision"
+  validate_image "$image"
+}
+
+compose() {
+  local record=$1; shift
+  docker compose --project-name nutrition-bot --env-file "$record" --file "$root/compose.yml" "$@"
+}
+
+isolated() {
+  local target_volume=$1 target_image=$2; shift 2
+  local -a options=()
+  while [[ $# -gt 0 && $1 != -- ]]; do options+=("$1"); shift; done
+  [[ ${1-} == -- ]] || die "Missing isolated command separator"
+  shift
+  docker run --rm --network none --read-only --cpus .5 --memory 512m --pids-limit 100 \
+    --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:size=64m \
+    --mount "type=volume,src=$target_volume,dst=/data" "${options[@]}" "$target_image" "$@"
+}
+
+check_db() {
+  local target_volume=$1 target_image=$2
+  isolated "$target_volume" "$target_image" \
+    --mount "type=bind,src=$root/dbcheck.py,dst=/dbcheck.py,readonly" \
+    --entrypoint python -- -c 'exec(compile(open("/dbcheck.py").read(), "/dbcheck.py", "exec"))' /data/app.sqlite3
+}
+
+archive_volume() {
+  local target_image=$1 archive=$2
+  isolated "$volume" "$target_image" --entrypoint python -- -c '
+import sys, tarfile
+with tarfile.open(fileobj=sys.stdout.buffer, mode="w|gz") as archive:
+    archive.add("/data", arcname=".")
+' > "$archive" || return 1
+  sha256sum "$archive" > "$archive.sha256"
+}
+
+restore_volume() {
+  local target_volume=$1 target_image=$2 archive=$3
+  sha256sum --check "$archive.sha256" >/dev/null || return 1
+  isolated "$target_volume" "$target_image" --interactive --entrypoint python -- -c '
+import sys, tarfile
+with tarfile.open(fileobj=sys.stdin.buffer, mode="r|gz") as archive:
+    archive.extractall("/data", filter="data")
+' < "$archive"
+}
+
+migrate_volume() {
+  local target_volume=$1 target_image=$2
+  docker run --rm --network none --read-only --cpus .5 --memory 512m --pids-limit 100 \
+    --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:size=64m \
+    --mount "type=volume,src=$target_volume,dst=/data" "$target_image" migrate
+}
+
+healthy() {
+  local record=$1 expected=$2 container before after status
+  container=$(compose "$record" ps -q bot)
+  [[ -n $container ]] || return 1
+  [[ $(docker inspect --format '{{.Config.Image}}' "$container") == "$expected" ]] || return 1
+  before=$(docker inspect --format '{{.RestartCount}}' "$container")
+  docker exec "$container" python -m nutrition_bot healthcheck > "$root/state/health.json" || return 1
+  python3 -c 'import json,sys; h=json.load(open(sys.argv[1])); sys.exit(not h["healthy"] or bool(h["degraded"]))' "$root/state/health.json" || return 1
+  sleep 15
+  status=$(docker inspect --format '{{.State.Health.Status}}' "$container")
+  after=$(docker inspect --format '{{.RestartCount}}' "$container")
+  [[ $status == healthy && $before == "$after" ]] || return 1
+  docker exec "$container" python -m nutrition_bot healthcheck > "$root/state/health.json" || return 1
+  python3 -c 'import json,sys; h=json.load(open(sys.argv[1])); sys.exit(not h["healthy"] or bool(h["degraded"]))' "$root/state/health.json"
+}
+
+deploy_release() {
+  local wanted_revision=$1 wanted_image=$2 candidate old_image trial run_dir
+  validate_revision "$wanted_revision"
+  validate_image "$wanted_image"
+  [[ $(stat -c '%u:%a' "$root/runtime.env") == 0:600 && ! -L $root/runtime.env ]] || die 'Runtime configuration must be root-owned mode 600'
+  docker volume inspect "$volume" >/dev/null || die 'Data volume must be provisioned before deployment'
+  docker pull "$wanted_image" || die 'Image pull failed; current worker unchanged'
+  [[ $(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$wanted_image") == "$wanted_revision" ]] || die 'Image revision does not match requested source'
+  candidate=$(mktemp "$root/state/candidate.XXXXXX")
+  printf 'DEPLOYED_REVISION=%s\nBOT_IMAGE=%s\n' "$wanted_revision" "$wanted_image" > "$candidate"
+  compose "$candidate" config --quiet || die 'Compose validation failed'
+  old_image=$wanted_image
+  if [[ -f $current ]]; then
+    read_release "$current"
+    old_image=$image
+    compose "$current" stop bot || die 'Could not stop current worker'
+  fi
+  # Refuse a competing worker or maintenance writer on this data volume.
+  [[ -z $(docker ps --filter "volume=$volume" --format '{{.ID}}') ]] || die 'Data volume still has a running container'
+  run_dir=$(mktemp -d "$root/backups/cutover.XXXXXX")
+  archive_volume "$old_image" "$run_dir/data.tar.gz" || die 'Backup failed; worker left stopped'
+  trial="bite-club-rehearsal-$(basename "$run_dir")"
+  docker volume create "$trial" >/dev/null || die "Could not create isolated rehearsal volume"
+  if ! restore_volume "$trial" "$old_image" "$run_dir/data.tar.gz" || \
+     ! check_db "$trial" "$old_image" > "$run_dir/before.json" || \
+     ! migrate_volume "$trial" "$wanted_image" || \
+     ! check_db "$trial" "$wanted_image" > "$run_dir/after.json" || \
+     ! python3 -c 'import json,sys; sys.path.insert(0,sys.argv[1]); from dbcheck import verify_preserved; verify_preserved(json.load(open(sys.argv[3])),json.load(open(sys.argv[2])))' "$root" "$run_dir/before.json" "$run_dir/after.json"; then
+    docker volume rm "$trial" >/dev/null
+    if [[ -f $current ]]; then compose "$current" up -d --no-build --wait --wait-timeout 180; fi
+    die 'Isolated restore/migration rehearsal failed; production data unchanged'
+  fi
+  docker volume rm "$trial" >/dev/null
+  if ! migrate_volume "$volume" "$wanted_image"; then
+    # Alembic may have committed earlier migrations. Restore the entire stopped volume.
+    isolated "$volume" "$old_image" --entrypoint python -- -c 'import pathlib,shutil; [shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink() for p in pathlib.Path("/data").iterdir()]'
+    restore_volume "$volume" "$old_image" "$run_dir/data.tar.gz" || die 'Migration and restore failed; worker remains stopped'
+    if [[ -f $current ]]; then compose "$current" up -d --no-build --wait --wait-timeout 180; fi
+    die 'Migration failed; restored pre-upgrade data'
+  fi
+  check_db "$volume" "$wanted_image" > "$run_dir/pre-start.json" || die 'Migrated database check failed; worker left stopped'
+  if ! compose "$candidate" up -d --no-build --wait --wait-timeout 180 || ! healthy "$candidate" "$wanted_image"; then
+    compose "$candidate" stop bot || die 'Failed candidate could not be stopped'
+    archive_volume "$wanted_image" "$run_dir/failed-start.tar.gz" || die 'Failed candidate backup failed'
+    # A started worker may have accepted new records. Never discard them automatically.
+    die "Startup verification failed; stopped candidate and preserved data in $run_dir; operator recovery required"
+  fi
+  if [[ -f $current ]]; then cp "$current" "$previous"; fi
+  install -m 600 "$candidate" "$root/releases/$wanted_revision.env"
+  mv -f "$candidate" "$current"
+  printf '[bite-club-deploy] release=%s health=healthy backup=%s\n' "$wanted_revision" "$run_dir"
+}
+
+main() {
+  [[ $# == 2 && $1 == --request && $EUID == 0 ]] || die 'Invalid invocation'
+  [[ $2 != *$'\n'* && $2 != *$'\r'* ]] || die 'Multiline requests are forbidden'
+  install -d -m 700 "$root/state" "$root/releases" "$root/backups"
+  exec 9>/run/lock/bite-club-deploy.lock
+  flock -n 9 || die 'Another deployment is in progress'
+  local -a words
+  read -r -a words <<< "$2"
+  case ${words[0]-} in
+    release)
+      [[ ${#words[@]} == 3 ]] || die 'Release requires revision and immutable image'
+      deploy_release "${words[1]}" "${words[2]}"
+      ;;
+    rollback)
+      [[ ${#words[@]} == 1 ]] || die 'Rollback takes no arguments'
+      read_release "$previous"
+      deploy_release "$revision" "$image"
+      ;;
+    status)
+      [[ ${#words[@]} == 1 ]] || die 'Status takes no arguments'
+      if [[ -f $current ]]; then read_release "$current"; printf 'revision=%s image=%s\n' "$revision" "$image"; fi
+      docker ps -a --filter 'name=^/nutrition-bot-bot-1$' --format '{{.Names}} {{.Status}}'
+      ;;
+    *) die 'Unsupported request' ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
