@@ -12,6 +12,7 @@ FROM build AS test
 RUN uv sync --frozen --no-editable
 COPY tests ./tests
 COPY scripts ./scripts
+COPY deploy ./deploy
 ENV PYTHONDONTWRITEBYTECODE=1
 CMD ["/app/.venv/bin/pytest", "-q", "-p", "no:cacheprovider"]
 

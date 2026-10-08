@@ -40,7 +40,7 @@ packages = ["src/nutrition_bot"]
 "migrations" = "nutrition_bot/migrations"
 
 [tool.hatch.build.targets.sdist]
-include = ["/src/", "/migrations/", "/tests/", "/tools/", "/scripts/", "/docs/", "/evals/", "/pyproject.toml", "/uv.lock", "/README.md", "/LICENSE", "/THIRD_PARTY_NOTICES.md", "/alembic.ini"]
+include = ["/src/", "/migrations/", "/tests/", "/tools/", "/scripts/", "/deploy/", "/docs/", "/evals/", "/pyproject.toml", "/uv.lock", "/README.md", "/LICENSE", "/THIRD_PARTY_NOTICES.md", "/alembic.ini"]
 exclude = ["/.beads/", "/.agents/", "/.codex/", "/private/", "/runtime-data/"]
 
 [tool.ruff]
