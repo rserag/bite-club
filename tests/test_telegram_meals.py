@@ -129,7 +129,13 @@ async def test_measured_multi_food_log_has_exact_snapshot_and_truthful_receipt(
     assert "C: unknown" in result["payload"]["text"]
     assert "F: 0.0 g" in result["payload"]["text"]
     assert "Fiber: 1.5 g known (1 unknown)" in result["payload"]["text"]
-    assert {button["text"] for button in result["payload"]["buttons"]} == {"Edit", "Delete", "Undo"}
+    assert {button["text"] for button in result["payload"]["buttons"]} == {
+        "Edit",
+        "Repeat",
+        "Save favorite",
+        "Delete",
+        "Undo",
+    }
     assert await ledger_counts(store) == (1, 1)
 
 

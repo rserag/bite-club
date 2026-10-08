@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light" />
+    <title>Bite Club · Your daily diary</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="masthead">
+        <a class="brand" href="#today" aria-label="Bite Club home"
+          ><span class="brand-mark" aria-hidden="true">b.</span
+          ><span>Bite Club<small>YOUR DAILY DIARY</small></span></a
+        ><button id="refresh" class="icon-button" aria-label="Refresh diary">
+          ↻
+        </button>
+      </header>
+      <div id="notice" class="notice" role="status" aria-live="polite">
+        Opening your diary…
+      </div>
+      <main>
+        <section id="today" class="view" aria-label="Today">
+          <div class="eyebrow" id="date-heading">YOUR DAY, AT A GLANCE</div>
+          <h1>A little more<br /><em>in balance.</em></h1>
+          <div class="date-control">
+            <label for="day">Diary date</label><input id="day" type="date" />
+          </div>
+          <section class="energy-card" aria-label="Recorded energy">
+            <div class="card-top">
+              <span>Recorded energy</span
+              ><span id="day-status" class="pill">Unknown completeness</span>
+            </div>
+            <div class="energy-line">
+              <strong id="energy">—</strong><span>kcal</span>
+            </div>
+            <div id="energy-target" class="subtle">No reviewed target set</div>
+            <div class="meter"><span id="energy-meter"></span></div>
+            <p id="energy-coverage">No food logged. Intake is unknown.</p>
+          </section>
+          <div
+            id="macros"
+            class="macro-grid"
+            aria-label="Recorded macronutrients"
+          ></div>
+          <button id="log-meal" class="primary wide">
+            ＋ Log a meal <span>Measured grams</span>
+          </button>
+          <div class="section-heading">
+            <h2>Your usuals</h2>
+            <span>Saved portions</span>
+          </div>
+          <div id="favorites" class="favorites">
+            <p class="empty">Your saved favorites will appear here.</p>
+          </div>
+          <div class="section-heading">
+            <h2>The last seven days</h2>
+            <span>Recorded kcal</span>
+          </div>
+          <section class="chart-card">
+            <div
+              id="energy-chart"
+              class="chart"
+              role="img"
+              aria-label="Seven-day recorded energy chart"
+            ></div>
+            <p class="subtle">
+              Missing days stay unknown. Bars show recorded food, not total
+              intake.
+            </p>
+          </section>
+          <div class="section-heading">
+            <h2>Weight history</h2>
+            <span>Latest measurements</span>
+          </div>
+          <section class="chart-card">
+            <div id="weight-chart" class="weight-chart"></div>
+            <p class="subtle">
+              Your recorded measurements; no invented or interpolated weights.
+            </p>
+          </section>
+          <details class="nutrient-details">
+            <summary>All nutrients &amp; data coverage</summary>
+            <div id="nutrients"></div>
+          </details>
+        </section>
+        <section id="foods" class="view" hidden>
+          <div class="eyebrow">YOUR REVIEWED CATALOG</div>
+          <h1>Find your<br /><em>next bite.</em></h1>
+          <p class="intro">
+            Choose a saved source, then enter the grams you measured.
+          </p>
+          <form id="search-form" class="search">
+            <label class="sr-only" for="food-search">Search saved foods</label
+            ><input
+              id="food-search"
+              maxlength="100"
+              placeholder="Search your foods…"
+              type="search"
+            /><button class="icon-button" aria-label="Search">↗</button>
+          </form>
+          <div id="food-results" class="list"></div>
+        </section>
+        <section id="history" class="view" hidden>
+          <div class="eyebrow">EVERY CHANGE HAS A HISTORY</div>
+          <h1>Your meals,<br /><em>remembered.</em></h1>
+          <p class="intro">
+            Open a meal to review its saved portions. Edits keep the earlier
+            revision.
+          </p>
+          <div id="meal-results" class="list"></div>
+          <button id="more-meals" class="secondary wide" hidden>
+            Load earlier meals
+          </button>
+        </section>
+      </main>
+    </div>
+    <nav class="bottom-nav" aria-label="Main navigation">
+      <button data-view="today" aria-current="page">
+        <span aria-hidden="true">◉</span>Today</button
+      ><button data-view="foods"><span aria-hidden="true">⌕</span>Foods</button
+      ><button data-view="history">
+        <span aria-hidden="true">◷</span>History
+      </button>
+    </nav>
+    <dialog id="meal-dialog">
+      <form id="meal-form">
+        <div class="dialog-header">
+          <div>
+            <div class="eyebrow" id="form-eyebrow">MEASURED MEAL</div>
+            <h2 id="form-title">Log a meal</h2>
+          </div>
+          <button
+            id="close-dialog"
+            type="button"
+            class="icon-button"
+            aria-label="Close meal form"
+          >
+            ×
+          </button>
+        </div>
+        <div class="form-grid">
+          <label
+            >Meal<select id="meal-label">
+              <option>Breakfast</option>
+              <option>Lunch</option>
+              <option>Dinner</option>
+              <option>Snack</option>
+              <option>Meal</option>
+            </select></label
+          ><label>Date<input id="meal-day" type="date" required /></label>
+        </div>
+        <div id="portion-rows"></div>
+        <button id="add-food" type="button" class="secondary wide">
+          ＋ Choose another food</button
+        ><label class="confirm-line"
+          ><input id="measured" type="checkbox" required /><span
+            >I measured every amount in grams.<small
+              >Estimated portions need a fresh draft and approval in
+              chat.</small
+            ></span
+          ></label
+        ><button id="save-meal" class="primary wide">Save measured meal</button>
+      </form>
+    </dialog>
+    <dialog id="detail-dialog">
+      <div class="dialog-header">
+        <h2 id="detail-title">Meal</h2>
+        <button
+          id="close-detail"
+          type="button"
+          class="icon-button"
+          aria-label="Close meal details"
+        >
+          ×
+        </button>
+      </div>
+      <div id="detail-body"></div>
+    </dialog>
+    <dialog id="receipt-dialog">
+      <div class="dialog-header">
+        <h2>Diary receipt</h2>
+        <button
+          id="close-receipt"
+          type="button"
+          class="icon-button"
+          aria-label="Close receipt"
+        >
+          ×
+        </button>
+      </div>
+      <p id="receipt-state" class="subtle">Your request is being processed.</p>
+      <pre id="receipt-text"></pre>
+      <button id="check-receipt" class="secondary wide">Check receipt</button>
+      <button id="review-chat" class="primary wide" hidden>
+        Review the draft in chat
+      </button>
+    </dialog>
+  </body>
+</html>

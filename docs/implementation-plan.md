@@ -2,11 +2,11 @@
 
 This document defines work packages and acceptance criteria, not a live task ledger. Maintainer execution records use local Beads and stay private; public contributors can use GitHub issues. See the README for the current implemented scope.
 
-Current source includes T01–T05, T06.1–T06.5, T06.6.1 nutrient references/review, T06.6.2 reviewed future-week allocation, supplement ledger/plans/reporting, and the separate real-user Telegram test runner. Operator-run encrypted backup/restore and bounded runtime-recovery tools are available. Verified-food suggestions, AI/photo workflows, reminders, exports, scheduled off-site backups and deployment remain future work. Local tests and selected live scenarios are evidence for those tested paths, not complete production readiness.
+Current source includes T01–T05, T06.1–T06.5, T06.6.1 nutrient references/review, T06.6.2 reviewed future-week allocation, supplement ledger/plans/reporting, and the separate real-user Telegram test runner. Operator-run encrypted backup/restore and bounded runtime-recovery tools are available. Telegram navigation/guided entry, opt-in settings/scheduling, optional meal AI drafts and authenticated Mini App source are now available. Provider activation and representative live vision evaluation remain separate. Verified-food suggestions, packaged-food workflows, exports and scheduled off-site recovery remain future work. Local tests and selected live scenarios are evidence for those tested paths, not complete production readiness.
 
 ## Architecture and boundaries
 
-Use Python 3.13, aiogram 3, SQLAlchemy 2 with aiosqlite, Alembic, Pydantic 2, httpx, and SQLite WAL/FULL. Lock compatible package versions during task T01; the versions here select major families, not an unverified lockfile. One Docker Compose service runs the receiver, inbox processor, outbox sender, scheduler, and cleanup loop. No HTTP ingress, FastAPI service, Redis, standalone queue, reverse proxy, or new monitoring stack is required.
+Use Python 3.13, aiogram 3, SQLAlchemy 2 with aiosqlite, Alembic, Pydantic 2, httpx, and SQLite WAL/FULL. Lock compatible package versions during task T01; the versions here select major families, not an unverified lockfile. One Docker Compose service runs the receiver, inbox processor, outbox sender, scheduler, and cleanup loop. The optional Mini App adds a bounded aiohttp server in the same process behind existing host HTTPS ingress. It uses the same authorized durable inbox and ledger. No FastAPI service, Redis, standalone queue, or new monitoring stack is required.
 
 ```mermaid
 flowchart LR

@@ -1,6 +1,6 @@
 # Foundation operations and verification
 
-This documents the implemented runtime and its failure boundaries. The [manual deployment runbook](manual-deployment.md) gives operator procedures. Tests use synthetic fixtures; host inventory, production logs and actual deployment records are private. AI remains disabled.
+This documents the implemented runtime and its failure boundaries. The [manual deployment runbook](manual-deployment.md) gives operator procedures. Tests use synthetic fixtures; host inventory, production logs and actual deployment records are private. Optional AI starts disabled and requires separate private setup and evaluation.
 
 ## What is durable
 
@@ -32,13 +32,13 @@ docker compose up -d
 
 This only requeues messages for the currently configured private chat. It does not replay application actions, retry expired callback answers, or recover scrubbed content. Ambiguous prior delivery can still produce a duplicate reply.
 
-Health checks require a matching schema and recent progress from the receiver, processor, sender, and cleanup loops. An API outage is reported as degraded while healthy local loops remain alive. A fatal loop error terminates the process; `restart: unless-stopped` can recover crashes after restart/reboot when Docker itself is enabled. Docker does not restart a merely unhealthy but still-running container by default; host-level detection/recovery remains a later operations task.
+Health checks require a matching schema and recent progress from the receiver, processor, sender, cleanup and scheduler loops. An API outage is reported as degraded while healthy local loops remain alive. A fatal loop error terminates the process; `restart: unless-stopped` can recover crashes after restart/reboot when Docker itself is enabled. Docker does not restart a merely unhealthy but still-running container by default; host-level detection/recovery remains a later operations task.
 
 Health/schema checks are local and do not depend on Telegram or AI availability. SIGTERM/SIGINT stops the loops and marks their heartbeats stopped. A file lock prevents two local workers or a migration from owning the same database simultaneously. Different databases cannot share one Telegram bot token safely; Telegram polling-conflict errors expose that operator mistake.
 
 ## Retention and sensitive files
 
-Completed inbox payloads and sent/failed reply content are scrubbed after 30 days by the cleanup loop. Minimal action/update IDs remain for duplicate protection. Photo files are not downloaded in this increment. Persistent meal drafts expire after seven inactive days; retained source/action associations support cleanup without erasing unrelated accepted records.
+Completed inbox payloads and sent/failed reply content are scrubbed after 30 days by the cleanup loop. Minimal action/update IDs remain for duplicate protection. An enabled photo interpretation route downloads bounded image bytes into memory without archiving them. Persistent meal drafts expire after seven inactive days; retained source/action associations support cleanup without erasing unrelated accepted records. Inactive guided-flow payloads expire after 30 minutes, retaining their revision counter so old buttons cannot apply to a new flow.
 
 The data directory, populated environment files, private onboarding notes, logs, exports, and backups are excluded from Git/build context. The container copies only package/build inputs. Source distributions use an explicit file allowlist and wheels include migrations. Logs emit event names/error classes, not exception messages, tokens, user input, or provider payloads.
 

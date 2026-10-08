@@ -15,7 +15,8 @@ from nutrition_bot.domain.daily import DailyNutrient, DailyTotals
 from nutrition_bot.domain.food import NUTRIENT_SCALE
 
 HELP = (
-    "Use /today for the full report or /today short for a quick view.\n"
+    "Use /today for your saved report length, /today full for details, "
+    "or /today short for a quick view.\n"
     "For an earlier date: /today yesterday or /today 2026-01-15 short. "
     "Choose at most one date and one view (full or short). Nothing was changed."
 )
@@ -34,14 +35,14 @@ class DailyRequest:
     short: bool = False
 
 
-def parse_request(text: str, *, today: date) -> DailyRequest | None:
+def parse_request(text: str, *, today: date, default_short: bool = False) -> DailyRequest | None:
     normalized = " ".join(text.casefold().replace("’", "'").split())
     if normalized.rstrip("?!. ") in {
         "how am i doing today",
         "show today's totals",
         "today",
     }:
-        return DailyRequest(today)
+        return DailyRequest(today, short=default_short)
     tokens = normalized.split()
     if not tokens or tokens[0] != "/today":
         return None
@@ -68,7 +69,9 @@ def parse_request(text: str, *, today: date) -> DailyRequest | None:
             raise DailyRequestError(HELP) from None
         if selected_day > today:
             raise DailyRequestError("Choose today or an earlier date.\n" + HELP)
-    return DailyRequest(selected_day or today, short=view == "short")
+    return DailyRequest(
+        selected_day or today, short=default_short if view is None else view == "short"
+    )
 
 
 def _label(value: str, limit: int = 32) -> str:
@@ -250,7 +253,7 @@ def _render_daily(
             lines.append("Some meals were recorded in another timezone; their dates are unchanged.")
     lines.extend(_target_lines(totals, target, status))
     command = f"/today {totals.local_date.isoformat()}"
-    lines.append(f"Full report: {command}" if short else f"Quick view: {command} short")
+    lines.append(f"Full report: {command} full" if short else f"Quick view: {command} short")
     return "\n".join(lines)
 
 
@@ -288,9 +291,14 @@ def render_daily(
 
 
 async def report_for_message(
-    connection: AsyncConnection, text: str, *, today: date, timezone: str
+    connection: AsyncConnection,
+    text: str,
+    *,
+    today: date,
+    timezone: str,
+    default_short: bool = False,
 ) -> str | None:
-    request = parse_request(text, today=today)
+    request = parse_request(text, today=today, default_short=default_short)
     if request is None:
         return None
     return await report_for_day(connection, request.day, timezone=timezone, short=request.short)

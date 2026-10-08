@@ -94,7 +94,7 @@ async def test_full_week_uses_only_complete_dates_and_historical_targets(
 ):
     await seed_week_target(service, store)
     await _populate_week(service, store)
-    report = await process(service, store, message(70, "/week"))
+    report = await process(service, store, message(70, "/week full"))
     text = report["payload"]["text"]
     assert f"Weekly report · {START} to {END}" in text
     assert "Coverage: complete 5 · incomplete 1 · unknown 1" in text
@@ -111,7 +111,7 @@ async def test_full_week_uses_only_complete_dates_and_historical_targets(
 
 async def test_short_week_uses_same_facts_and_can_switch_back(service, store, daily_catalog):
     await _populate_week(service, store)
-    full = await process(service, store, message(70, "/week"))
+    full = await process(service, store, message(70, "/week full"))
     short = await process(service, store, weekly_press(full, "short", update_id=71))
     text = short["payload"]["text"]
     assert "Coverage: complete 5 · incomplete 1 · unknown 1" in text
@@ -127,7 +127,7 @@ async def test_sparse_week_withholds_micronutrient_screening(service, store, dai
     await process(service, store, message(1, "/meal 2023-11-14 100g rice"))
     today = await process(service, store, message(2, "/today"))
     await process(service, store, daily_press(today, "complete", update_id=3))
-    report = await process(service, store, message(4, "/week"))
+    report = await process(service, store, message(4, "/week full"))
     assert (
         "Possible-gap screening withheld: fewer than 5 complete dates" in report["payload"]["text"]
     )

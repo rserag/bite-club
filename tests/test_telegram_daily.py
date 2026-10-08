@@ -63,7 +63,7 @@ async def test_full_report_needs_no_goal_setup_and_preserves_unknown_zero_and_pa
     service, store, daily_catalog
 ):
     await process(service, store, message(1, "Lunch: 150g rice and 200g chicken"))
-    result = await process(service, store, message(2, "/today"))
+    result = await process(service, store, message(2, "/today full"))
     text = report_text(result)
     assert "Energy: 550 kcal" in text
     assert "Protein: 55.0 g" in text

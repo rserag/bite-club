@@ -63,6 +63,8 @@ class MealReply:
     supplement_plan_proposal_id: int | None = None
     supplement_intake_id: int | None = None
     supplement_intake_revision_id: int | None = None
+    ui_buttons: tuple[tuple[str, str], ...] = ()
+    review_required: bool = False
 
 
 def _short(value: str, limit: int = 90) -> str:
@@ -133,7 +135,7 @@ def receipt(meal: MealSnapshot, lead: str = "Meal") -> MealReply:
     )
     buttons = ["edit"]
     if not meal.deleted:
-        buttons.append("delete")
+        buttons.extend(("repeat", "save", "delete"))
     if meal.operation != "undo":
         buttons.append("undo")
     return MealReply("\n".join(lines), "meal_receipt", meal.id, meal.revision_id, tuple(buttons))
