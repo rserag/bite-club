@@ -1,4 +1,5 @@
 import time
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -376,7 +377,7 @@ async def has_weight_context(connection: AsyncConnection, end: date) -> bool:
     ):
         return True
     # A scheduled transition is context, not evidence that any dose was consumed.
-    rows = (
+    rows: Sequence[object] = (
         (
             await connection.execute(
                 sa.select(plan_proposals.c.plan)

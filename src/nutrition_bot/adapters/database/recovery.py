@@ -1,4 +1,5 @@
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -221,7 +222,7 @@ async def undo_recovery(
 
 
 async def recent_recovery(connection: AsyncConnection, limit: int = 10) -> list[RecoverySnapshot]:
-    ids = (
+    ids: Sequence[int] = (
         (
             await connection.execute(
                 sa.select(recovery_checkins.c.id)

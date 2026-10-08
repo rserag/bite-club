@@ -2,6 +2,7 @@
 
 import re
 import time
+from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -501,7 +502,7 @@ async def track_message_reference(
             identifiers.add(origin)
     target = message.reply_to_message
     if target and target.from_user and target.from_user.is_bot and target.from_user.id == bot_id:
-        linked = await connection.scalars(
+        linked: sa.ScalarResult[int] = await connection.scalars(
             sa.select(draft_action_links.c.draft_id)
             .join(outbox, outbox.c.action_key == draft_action_links.c.action_key)
             .where(
@@ -531,7 +532,7 @@ async def handle_draft_message(
     retention_days: int,
 ) -> MealReply | None:
     if text.casefold() == "/drafts":
-        rows = (
+        rows: Sequence[int] = (
             (
                 await connection.execute(
                     sa.select(meal_drafts.c.id)
@@ -550,8 +551,8 @@ async def handle_draft_message(
                 "draft_list",
             )
         lines = ["Open drafts (not in totals):"]
-        for draft_id in rows:
-            draft = await get_draft(connection, draft_id)
+        for listed_draft_id in rows:
+            draft = await get_draft(connection, listed_draft_id)
             if draft and draft.content:
                 await track_draft_action(connection, draft.id, action_key)
                 lines.append(

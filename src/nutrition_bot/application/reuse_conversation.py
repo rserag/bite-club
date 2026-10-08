@@ -2,6 +2,7 @@
 
 import re
 import time
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -385,7 +386,7 @@ async def handle_reuse_message(
     yesterday = re.fullmatch(r"same\s+(.+?)\s+as yesterday", text, re.IGNORECASE)
     if yesterday:
         day = reference.date() - timedelta(days=1)
-        ids = (
+        ids: Sequence[int] = (
             (
                 await connection.execute(
                     sa.select(meals.c.id)

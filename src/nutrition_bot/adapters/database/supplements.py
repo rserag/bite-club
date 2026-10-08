@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -241,7 +242,7 @@ async def get_supplement_product(
     )
     if row is None or row["amount_scaled"] is None:
         raise SupplementError("That supplement product is unavailable.")
-    aliases = tuple(
+    aliases: tuple[str, ...] = tuple(
         (
             await connection.execute(
                 sa.select(supplement_product_aliases.c.display_name)
@@ -265,7 +266,9 @@ async def get_supplement_product(
 async def list_supplement_products(
     connection: AsyncConnection,
 ) -> list[SupplementProductSnapshot]:
-    ids = (await connection.execute(sa.select(supplement_products.c.id))).scalars().all()
+    ids: Sequence[int] = (
+        (await connection.execute(sa.select(supplement_products.c.id))).scalars().all()
+    )
     return [await get_supplement_product(connection, product_id) for product_id in ids]
 
 
@@ -646,7 +649,7 @@ async def undo_supplement_intake(
 async def recent_supplement_intakes(
     connection: AsyncConnection, limit: int = 10
 ) -> list[SupplementIntakeSnapshot]:
-    ids = (
+    ids: Sequence[int] = (
         (
             await connection.execute(
                 sa.select(supplement_intakes.c.id)

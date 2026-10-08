@@ -18,7 +18,7 @@ dependencies = [
   "httpx>=0.28,<0.29",
   "pydantic-settings>=2.9,<3",
   "pyjwt[crypto]>=2.10,<3",
-  "sqlalchemy[asyncio]>=2.0.40,<2.1",
+  "sqlalchemy[asyncio]>=2.0.40,<2.2",
   "tzdata>=2025.2",
 ]
 
@@ -30,7 +30,7 @@ Repository = "https://github.com/rserag/bite-club"
 Issues = "https://github.com/rserag/bite-club/issues"
 
 [dependency-groups]
-dev = ["pytest>=8.3,<10", "pytest-asyncio>=1,<2", "ruff>=0.11,<1", "mypy>=1.15,<2"]
+dev = ["pytest>=8.3,<10", "pytest-asyncio>=1,<2", "ruff>=0.11,<1", "mypy>=1.15,<3"]
 e2e = [
     "telethon>=1.45,<2",
 ]

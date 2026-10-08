@@ -1,4 +1,5 @@
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from fractions import Fraction
@@ -270,7 +271,7 @@ async def daily_weights(
 
 
 async def recent_weights(connection: AsyncConnection, limit: int = 10) -> list[WeightSnapshot]:
-    ids = (
+    ids: Sequence[int] = (
         (
             await connection.execute(
                 sa.select(body_weights.c.id).order_by(body_weights.c.id.desc()).limit(limit)

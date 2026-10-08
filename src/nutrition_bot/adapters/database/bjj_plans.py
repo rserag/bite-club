@@ -280,7 +280,7 @@ async def day_plan(connection: AsyncConnection, day: date) -> DayPlan:
         )
     else:
         state, activities, source = "unknown", (), "no plan"
-    completed = tuple(
+    completed: tuple[str, ...] = tuple(
         (
             await connection.execute(
                 sa.select(training_session_revisions.c.kind)

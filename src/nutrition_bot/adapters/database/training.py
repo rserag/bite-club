@@ -1,4 +1,5 @@
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from statistics import median
@@ -206,7 +207,7 @@ async def inferred_rpe(
         conditions.append(
             sa.func.lower(training_session_revisions.c.focus) == (focus or "").lower()
         )
-    values = (
+    values: Sequence[int] = (
         (
             await connection.execute(
                 sa.select(training_session_revisions.c.session_rpe_tenths)
@@ -556,7 +557,7 @@ async def revise_bjj_details(
 
 
 async def recent_training(connection: AsyncConnection, limit: int = 10) -> list[TrainingSnapshot]:
-    ids = (
+    ids: Sequence[int] = (
         (
             await connection.execute(
                 sa.select(training_sessions.c.id)
