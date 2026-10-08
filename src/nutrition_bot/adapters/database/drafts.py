@@ -93,7 +93,7 @@ async def _food_references(
             [{"draft_id": draft_id, "recipe_version_id": value} for value in sorted(recipe_ids)],
         )
     identifiers = {item.food_version_id for item in content.items}
-    found = set(
+    found: set[int] = set(
         (
             await connection.scalars(
                 sa.select(food_versions.c.id).where(

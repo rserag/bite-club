@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert
@@ -281,7 +282,7 @@ class FoodCatalog:
                 )
             )
             # This bounded, disposable cache is separate from indefinitely saved food versions.
-            overflow = (
+            overflow: Sequence[str] = (
                 (
                     await connection.execute(
                         sa.select(cache.c.external_id)

@@ -2,6 +2,7 @@
 
 import re
 import time as clock_time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal, localcontext
@@ -723,7 +724,7 @@ async def handle_message(
         if text == "/foods" or text.startswith("/foods "):
             return await food_choices(connection, text[6:].strip())
         if text == "/meals":
-            rows = (
+            rows: Sequence[int] = (
                 (
                     await connection.execute(
                         sa.select(meals.c.id).order_by(meals.c.id.desc()).limit(10)

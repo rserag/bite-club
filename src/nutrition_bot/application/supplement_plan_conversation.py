@@ -1,4 +1,5 @@
 import re
+from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
@@ -52,7 +53,7 @@ async def handle_plan_message(
         if normalized.casefold() in {"/supplement plan", "/supplements plan"}:
             return MealReply(HELP, "supplement_plan_help")
         if normalized.casefold() in {"/supplement plans", "/supplements plans"}:
-            ids = (
+            ids: Sequence[int] = (
                 (
                     await connection.execute(
                         sa.select(supplement_regimens.c.id)

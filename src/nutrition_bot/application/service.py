@@ -1226,7 +1226,7 @@ class Service:
     async def retry_failed_replies(self) -> int:
         """Operator-requested recovery; never revive expired content or old ownership."""
         async with self.store.write() as connection:
-            ids = list(
+            ids: list[int] = list(
                 (
                     await connection.execute(
                         sa.select(outbox.c.id).where(

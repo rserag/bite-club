@@ -1,4 +1,5 @@
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -23,7 +24,7 @@ class FoodDayStatus:
 
 
 async def _open_drafts(connection: AsyncConnection, local_date: date) -> int:
-    rows = (
+    rows: Sequence[object] = (
         (
             await connection.execute(
                 sa.select(meal_drafts.c.content).where(meal_drafts.c.state == "open")
