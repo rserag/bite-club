@@ -8,16 +8,16 @@ from nutrition_bot.application.daily_report import (
     DailyRequestError,
     parse_request,
     report_for_day,
-    report_for_message,
 )
 from nutrition_bot.application.meal_conversation import MealReply
+from nutrition_bot.application.settings_service import load_preferences
 
 
-def _reply(text: str, day: date) -> MealReply:
+def _reply(text: str, day: date, *, short: bool) -> MealReply:
     return MealReply(
         text,
         "daily_report",
-        buttons=("complete", "incomplete", "add"),
+        buttons=("full" if short else "short", "complete", "incomplete", "add"),
         daily_date=day.isoformat(),
     )
 
@@ -30,6 +30,8 @@ async def handle_daily_message(
     today: date,
     timezone: str,
 ) -> MealReply | None:
+    preferences = await load_preferences(connection, default_timezone=timezone)
+    default_short = preferences.report_length == "short"
     normalized = " ".join(text.casefold().split())
     selected: str | None = None
     if normalized in {"all food logged", "mark today complete", "/today complete"}:
@@ -39,17 +41,21 @@ async def handle_daily_message(
     if selected:
         try:
             await mark_food_day(connection, today, selected, action_key=action_key)
-            return _reply(await report_for_day(connection, today, timezone=timezone), today)
+            return _reply(
+                await report_for_day(connection, today, timezone=timezone, short=default_short),
+                today,
+                short=default_short,
+            )
         except CheckinError as exc:
             return MealReply(f"{exc}\nNothing changed.", "daily_rejected")
     try:
-        request = parse_request(text, today=today)
-        rendered = await report_for_message(connection, text, today=today, timezone=timezone)
+        request = parse_request(text, today=today, default_short=default_short)
     except DailyRequestError as exc:
         return MealReply(str(exc), "daily_report_help")
-    if rendered is None or request is None:
+    if request is None:
         return None
-    return _reply(rendered, request.day)
+    rendered = await report_for_day(connection, request.day, timezone=timezone, short=request.short)
+    return _reply(rendered, request.day, short=request.short)
 
 
 async def handle_daily_callback(
@@ -64,6 +70,13 @@ async def handle_daily_callback(
         if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day_text) is None:
             raise CheckinError("That report date is invalid. Open /today again.")
         day = date.fromisoformat(day_text)
+        if action in {"full", "short"}:
+            short = action == "short"
+            return _reply(
+                await report_for_day(connection, day, timezone=timezone, short=short),
+                day,
+                short=short,
+            )
         if action == "add":
             return MealReply(
                 "Send a measured meal, use /foods to find an exact food, or /drafts to resume "
@@ -71,6 +84,11 @@ async def handle_daily_callback(
                 "daily_add_help",
             )
         await mark_food_day(connection, day, action, action_key=action_key)
-        return _reply(await report_for_day(connection, day, timezone=timezone), day)
+        short = (
+            await load_preferences(connection, default_timezone=timezone)
+        ).report_length == "short"
+        return _reply(
+            await report_for_day(connection, day, timezone=timezone, short=short), day, short=short
+        )
     except (CheckinError, ValueError) as exc:
         return MealReply(f"{exc}\nNothing changed.", "daily_rejected")

@@ -153,7 +153,13 @@ async def test_new_goal_keeps_history_and_is_the_only_active_goal(service, store
 
 async def test_goal_help_and_invalid_fields_do_not_create_proposals(service, store):
     help_result = await process(service, store, message(1, "/goal setup"))
-    assert "/goal estimate" in help_result["payload"]["text"]
+    assert "What is your goal?" in help_result["payload"]["text"]
+    assert {button["text"] for button in help_result["payload"]["buttons"]} == {
+        "Loss",
+        "Maintenance",
+        "Gain",
+        "Cancel setup",
+    }
     rejected = await process(
         service,
         store,

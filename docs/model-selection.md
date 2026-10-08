@@ -1,6 +1,6 @@
 # Initial model assignments and evaluation
 
-Prepared 21 September 2026. These are implementation candidates, not measured winners or activated production endpoints. No paid inference or evaluation has been run. Provider availability and prices must be rechecked before enabling live requests.
+The OpenRouter candidate comparison below was prepared on 21 September 2026. These are candidates, not measured winners or activated production endpoints. Provider availability and prices must be rechecked before enabling live requests. The optional app-owned ChatGPT plan route was added on 8 October; its model slugs come from the account's current public catalog and require the same task-specific evaluation gates. See [AI setup](ai-setup.md) for the implemented opt-in runner and subscription limits.
 
 ## Proposed assignments
 
@@ -45,7 +45,7 @@ Store monetary amounts as integer micro-USD. Reserve a conservative maximum cost
 
 ## Evaluation and promotion
 
-Seed cases are in `../evals/parsing_cases.jsonl`; the runner is an implementation task, not an existing command. Extend to at least 40 text cases, 20 explicitly labeled image/label cases, and 10 historical-question cases before production. Use synthetic data or privately supplied, authorized images; never commit real meal history/photos. Include readable/blurred labels, per-serving/per-100g changes, decimal commas, mixed units, cooked/raw ambiguity, correction references, rough-template reuse, and embedded malicious instructions.
+The implemented runner and 60 synthetic meal cases are documented in [AI setup](ai-setup.md). Promote each route separately: at least 40 text cases for meal text, 20 representative image cases for meal photos, and separate label/history evaluations before those future routes are enabled. Blank-image refusal fixtures alone do not establish meal-photo accuracy. Use synthetic data or privately supplied, authorized images; never commit real meal history/photos. Include readable/blurred labels, per-serving/per-100g changes, decimal commas, mixed units, cooked/raw ambiguity, correction references, rough-template reuse, and embedded malicious instructions in the relevant task set.
 
 Measure schema validity, exact intent/field extraction, appropriate clarification, unsupported nutrition claims, numeric preservation, latency, token use, total cost, and provider route. Mask personal data in saved outputs. Use a held-out portion for model/prompt changes.
 

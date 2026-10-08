@@ -137,7 +137,9 @@ async def draft_receipt(
             )
     unresolved = any(item.edible_milligrams is None for item in content.items)
     lines.append(
-        "Not in your totals. No food is saved until the quantities are resolved "
+        "Not in your totals. Review the food choices and quantities, then tap Approve draft."
+        if content.review_required
+        else "Not in your totals. No food is saved until the quantities are resolved "
         "or you tap Approve estimate."
     )
     if unresolved:
@@ -161,6 +163,7 @@ async def draft_receipt(
         buttons=buttons,
         draft_id=draft.id,
         draft_revision=draft.revision,
+        review_required=content.review_required,
     )
 
 
@@ -299,6 +302,8 @@ async def _finalize(
 ) -> MealReply:
     content = draft.content
     assert content is not None
+    if content.review_required and not approve:
+        raise MealError("Review this draft and tap its approval button before saving.")
     items = []
     for item in content.items:
         if (
@@ -358,7 +363,14 @@ async def _finalize(
         now=now,
         saved_meal_id=saved.id,
     )
-    return receipt(saved, "Saved with approved estimates" if approve else "Saved measured meal")
+    return receipt(
+        saved,
+        "Saved with approved estimates"
+        if any(item.estimate_basis for item in content.items)
+        else "Saved reviewed meal"
+        if content.review_required
+        else "Saved measured meal",
+    )
 
 
 async def _edit(
@@ -401,7 +413,7 @@ async def _edit(
     changed = await revise_draft(
         connection, draft.id, draft.revision, content, action_key=action_key, now=time.time()
     )
-    if all(
+    if not content.review_required and all(
         item.edible_milligrams is not None and item.estimate_basis is None for item in content.items
     ):
         return await _finalize(

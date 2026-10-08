@@ -7,8 +7,11 @@ services:
       - /opt/bite-club/runtime.env
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/app.sqlite3
+    ports:
+      - "127.0.0.1:8010:8080"
     volumes:
       - bot-data:/data
+      - /opt/bite-club/credentials:/auth
     read_only: true
     tmpfs:
       - /tmp:size=32m,mode=1777
@@ -22,7 +25,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    stop_grace_period: 30s
+    # A rotating OAuth renewal joins bounded verification/persistence before exit.
+    stop_grace_period: 60s
 
 volumes:
   bot-data:

@@ -12,10 +12,12 @@ license-files = ["LICENSE"]
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "aiogram>=3.20,<4",
+  "aiohttp>=3.12,<4",
   "aiosqlite>=0.21,<1",
   "alembic>=1.16,<2",
   "httpx>=0.28,<0.29",
   "pydantic-settings>=2.9,<3",
+  "pyjwt[crypto]>=2.10,<3",
   "sqlalchemy[asyncio]>=2.0.40,<2.1",
   "tzdata>=2025.2",
 ]

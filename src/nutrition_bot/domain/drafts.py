@@ -56,6 +56,7 @@ class PlannedItem(FrozenModel):
 
 
 class DraftContent(FrozenModel):
+    review_required: bool = False
     label: str = Field(min_length=1, max_length=120)
     local_date: date
     timezone: str = Field(min_length=1, max_length=100)

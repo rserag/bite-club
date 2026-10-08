@@ -22,6 +22,18 @@ under `/opt/bite-club`, and the two executable controllers under
 file with mode 0600. The Compose project remains `nutrition-bot`, using the
 external `nutrition-bot_bot-data` volume. Do not run a second polling worker.
 
+The optional Mini App binds container port 8080 to host loopback port 8010.
+Configure its HTTPS hostname and Nginx using
+[`nginx.conf.example`](../deploy/nginx.conf.example); authenticate each API
+request with fresh Telegram init data. Create the separate credentials directory
+`/opt/bite-club/credentials` with runtime UID/GID 10001 and mode 0700 before
+installing Compose. Its writable `/auth` mount supports private OAuth token
+rotation; credential files must remain mode 0600. Neither ingress nor AI is
+enabled by the public environment defaults.
+
+The production stop grace is 60 seconds so a rotating OAuth refresh can finish
+its bounded identity verification and atomic token save before process exit.
+
 Create a dedicated `bite-club-deploy` account without Docker group membership.
 Its authorized key must use `restrict` and the forced command
 `/usr/local/sbin/bite-club-deploy-ssh`. A root-owned, validated sudoers entry

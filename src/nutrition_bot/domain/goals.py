@@ -94,6 +94,13 @@ def estimate_targets(
         requested = min(requested, Decimal(tdee) * Decimal("1.1"))
     energy = _round(requested, 50)
     protein, fat, carbohydrate = _macros(mode, weight_kg, energy)
+    if not (
+        1 <= energy <= 10000
+        and 20 <= protein <= 500
+        and 20 <= fat <= 300
+        and 0 <= carbohydrate <= 1200
+    ):
+        raise GoalError("This estimate exceeds the supported plan range. Use /goal manual.")
     weight_grams = _round(weight_kg * 1000, 1)
     return TargetProposal(
         method="estimate",
@@ -134,6 +141,8 @@ def manual_targets(
     if remaining < 0:
         raise GoalError("Calories are lower than the supplied protein and fat require.")
     carbohydrate = _round(Decimal(remaining) / 4, 5)
+    if not 0 <= carbohydrate <= 1200:
+        raise GoalError("Carbohydrate must be 0–1200 g. Lower calories or adjust protein and fat.")
     return TargetProposal(
         method="manual",
         mode=mode,

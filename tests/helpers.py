@@ -49,6 +49,12 @@ class FakeGateway:
     async def preflight(self):
         pass
 
+    async def configure_menu(self, chat_id):
+        pass
+
+    async def configure_miniapp(self, chat_id, url):
+        pass
+
     async def poll(self, offset):
         self.offsets.append(offset)
         return self.batches.pop(0) if self.batches else []
@@ -59,6 +65,9 @@ class FakeGateway:
         self.messages.append((chat_id, text, button_token))
         self.keyboards.append(buttons)
         return 77
+
+    async def download_photo(self, message):
+        raise NotImplementedError("Synthetic gateway has no photos")
 
     async def answer_callback(self, callback_id, text):
         if self.failure:

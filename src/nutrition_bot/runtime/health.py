@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from nutrition_bot.adapters.database.schema import SCHEMA_REVISION
 from nutrition_bot.config import StorageSettings
 
-COMPONENTS = ("receiver", "processor", "sender", "cleanup")
+COMPONENTS = ("receiver", "processor", "sender", "cleanup", "scheduler")
 
 
 @dataclass(frozen=True)
