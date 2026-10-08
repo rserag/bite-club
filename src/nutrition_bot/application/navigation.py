@@ -21,7 +21,7 @@ from nutrition_bot.application.meal_conversation import MealReply, handle_messag
 from nutrition_bot.domain.food import exact_decimal, grams_to_milligrams
 
 HOME = (
-    ("Log meal", "log"),
+    ("Log food", "log"),
     ("Today", "today"),
     ("Favorites", "favorites"),
     ("Training", "training"),
@@ -223,7 +223,7 @@ async def ui_action(
         )
     if action == "help":
         return menu(
-            "Choose a topic. For regular use, start with Log meal or a saved favorite.",
+            "Choose a topic. For regular use, start with Log food or a saved favorite.",
             (
                 ("Food & portions", "command:/meal"),
                 ("Targets & setup", "setup"),
@@ -275,9 +275,9 @@ async def ui_action(
         )
         snapshots = [await get_meal(connection, mid) for mid in ids]
         return menu(
-            "Choose a meal to view, repeat or edit." if snapshots else "No meals logged yet.",
+            "Choose a meal to view, log again or edit." if snapshots else "No meals logged yet.",
             tuple((f"{m.local_date} · {m.label}"[:45], f"command:/meal M{m.id}") for m in snapshots)
-            + (("Log meal", "log"), ("Home", "home")),
+            + (("Log food", "log"), ("Home", "home")),
         )
     if action == "settings":
         from nutrition_bot.application.settings_conversation import handle_settings_message

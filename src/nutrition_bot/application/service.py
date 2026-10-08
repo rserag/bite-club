@@ -23,10 +23,12 @@ from nutrition_bot.adapters.database.schema import (
     outbox,
     profile,
 )
+from nutrition_bot.adapters.database.schema_drafts import draft_action_links
 from nutrition_bot.adapters.database.store import Store
 from nutrition_bot.application.meal_conversation import MealReply, handle_message
 from nutrition_bot.config import BotSettings
 from nutrition_bot.telegram.auth import authorized
+from nutrition_bot.telegram.gateway import split_message
 
 if TYPE_CHECKING:
     from nutrition_bot.application.ai_service import AiService
@@ -158,6 +160,10 @@ class Service:
         while True:
             try:
                 return await self._process_one(prepared)
+            except QueueFullError:
+                # Long receipts reserve all delivery parts atomically. Roll back
+                # the action and leave its inbox row pending until capacity returns.
+                return False
             except _NeedsAi as request:
                 assert self.ai_service is not None
                 photo_started = time.monotonic()
@@ -266,7 +272,20 @@ class Service:
                 valid_meal = (
                     len(parts) == 3
                     and parts[0] == "meal"
-                    and parts[1] in {"edit", "repeat", "save", "delete", "undo"}
+                    and parts[1]
+                    in {
+                        "edit",
+                        "repeat",
+                        "save",
+                        "delete",
+                        "undo",
+                        "undo_save",
+                        "undo_edit",
+                        "restore",
+                        "details",
+                        "more",
+                        "compact",
+                    }
                 )
                 valid_draft = (
                     len(parts) == 3
@@ -927,12 +946,32 @@ class Service:
             )
             if result and result.meal_id:
                 payload.update(meal_id=result.meal_id, meal_revision_id=result.revision_id)
+                labels = {
+                    "save": "Save favorite",
+                    "repeat": "Log again",
+                    "undo_save": "Undo save",
+                    "undo_edit": "Undo edit",
+                    "restore": "Restore meal",
+                    "compact": "Back to meal",
+                }
+                rows = {
+                    "repeat": "0",
+                    "restore": "0",
+                    "save": "0",
+                    "edit": "1",
+                    "undo_save": "1",
+                    "undo_edit": "1",
+                    "undo": "1",
+                    "delete": "1",
+                    "details": "2",
+                    "more": "2",
+                    "compact": "2",
+                }
                 payload["buttons"] = [
                     {
-                        "text": {"save": "Save favorite", "repeat": "Repeat"}.get(
-                            name, name.capitalize()
-                        ),
+                        "text": labels.get(name, name.capitalize()),
                         "callback_data": f"meal:{name}:{reply_token}",
+                        "row": rows[name],
                     }
                     for name in result.buttons
                 ]
@@ -986,13 +1025,21 @@ class Service:
                 payload.update(daily_date=result.daily_date)
                 labels = {
                     "complete": "All food logged",
-                    "incomplete": "Incomplete",
-                    "add": "Add something",
+                    "incomplete": "Not all logged",
+                    "add": "Log food",
                     "full": "Details",
                     "short": "Short version",
                 }
                 payload["buttons"] = [
-                    {"text": labels[name], "callback_data": f"daily:{name}:{reply_token}"}
+                    {
+                        "text": labels[name],
+                        "callback_data": f"daily:{name}:{reply_token}",
+                        "row": "0"
+                        if name == "add"
+                        else "1"
+                        if name in {"complete", "incomplete"}
+                        else "2",
+                    }
                     for name in result.buttons
                 ]
             elif result and result.weekly_end:
@@ -1092,19 +1139,67 @@ class Service:
         payload: dict[str, Any],
         token: str | None = None,
     ) -> None:
-        await connection.execute(
-            sa.insert(outbox).values(
-                action_key=key,
-                kind=kind,
-                chat_id=self.settings.allowed_telegram_chat_id,
-                owner_user_id=self.settings.allowed_telegram_user_id,
-                payload=payload,
-                status="queued",
-                next_attempt_at=time.time(),
-                created_at=time.time(),
-                button_token=token,
-            )
+        parts = split_message(payload["text"]) if kind == "message" else (payload["text"],)
+        pending = await connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(outbox)
+            .where(outbox.c.status.in_(["queued", "sending"]))
         )
+        if int(pending or 0) + len(parts) > MAX_PENDING_REPLIES:
+            raise QueueFullError()
+        created_at = time.time()
+        for index, part in enumerate(parts, start=1):
+            final = index == len(parts)
+            part_key = key
+            part_payload = payload.copy()
+            part_token = token if final else None
+            if len(parts) > 1:
+                part_payload.update(
+                    text=f"Part {index}/{len(parts)}\n\n{part}",
+                    message_group=key,
+                    message_part=index,
+                    message_parts=len(parts),
+                )
+                if not final:
+                    part_payload.pop("buttons", None)
+                    part_payload.pop("ui_requests", None)
+                    # The outbox has one row per action/kind. Delivery-only child
+                    # actions preserve that constraint without a schema change.
+                    part_key = f"{key}:message-part:{index}"
+                    update_id = await connection.scalar(
+                        sa.select(actions.c.update_id).where(actions.c.key == key)
+                    )
+                    await connection.execute(
+                        sa.insert(actions).values(
+                            key=part_key,
+                            update_id=update_id,
+                            kind="message_part",
+                            created_at=created_at,
+                        )
+                    )
+                    # Every delivered draft part must participate in expiry and
+                    # quoted-message cleanup, including replies to earlier parts.
+                    await connection.execute(
+                        sa.insert(draft_action_links).from_select(
+                            ["draft_id", "action_key"],
+                            sa.select(draft_action_links.c.draft_id, sa.literal(part_key)).where(
+                                draft_action_links.c.action_key == key
+                            ),
+                        )
+                    )
+            await connection.execute(
+                sa.insert(outbox).values(
+                    action_key=part_key,
+                    kind=kind,
+                    chat_id=self.settings.allowed_telegram_chat_id,
+                    owner_user_id=self.settings.allowed_telegram_user_id,
+                    payload=part_payload,
+                    status="queued",
+                    next_attempt_at=created_at,
+                    created_at=created_at,
+                    button_token=part_token,
+                )
+            )
 
     async def pulse(
         self, component: str, state: str | None = None, *, success: bool = False
@@ -1157,6 +1252,7 @@ class Service:
     async def claim_reply(self) -> RowMapping | None:
         async with self.store.write() as connection:
             await expire_drafts(connection, now=time.time())
+            earlier = outbox.alias("earlier_message_part")
             row = (
                 (
                     await connection.execute(
@@ -1164,6 +1260,15 @@ class Service:
                         .where(
                             outbox.c.status == "queued",
                             outbox.c.next_attempt_at <= time.time(),
+                            ~sa.exists(
+                                sa.select(earlier.c.id).where(
+                                    outbox.c.payload["message_group"].as_string().is_not(None),
+                                    earlier.c.payload["message_group"].as_string()
+                                    == outbox.c.payload["message_group"].as_string(),
+                                    earlier.c.id < outbox.c.id,
+                                    earlier.c.status != "sent",
+                                )
+                            ),
                         )
                         .order_by(
                             sa.case((outbox.c.kind == "callback_answer", 0), else_=1), outbox.c.id
@@ -1224,6 +1329,15 @@ class Service:
         error_type: str | None = None,
     ) -> None:
         async with self.store.write() as connection:
+            message_group = (
+                await connection.scalar(
+                    sa.select(outbox.c.payload["message_group"].as_string()).where(
+                        outbox.c.id == reply_id
+                    )
+                )
+                if status == "failed"
+                else None
+            )
             await connection.execute(
                 sa.update(outbox)
                 .where(outbox.c.id == reply_id)
@@ -1235,6 +1349,19 @@ class Service:
                     error_type=error_type,
                 )
             )
+            if status == "failed" and isinstance(message_group, str):
+                # A terminal part failure invalidates the remaining delivery.
+                # Otherwise siblings could survive queued beyond raw retention
+                # and become sendable after the failed part's payload is purged.
+                await connection.execute(
+                    sa.update(outbox)
+                    .where(
+                        outbox.c.payload["message_group"].as_string() == message_group,
+                        outbox.c.id != reply_id,
+                        outbox.c.status.in_(["queued", "sending"]),
+                    )
+                    .values(status="failed", error_type="MessagePartBlocked")
+                )
 
     async def cleanup(self) -> None:
         cutoff = time.time() - self.settings.raw_input_retention_days * 86400
@@ -1272,20 +1399,54 @@ class Service:
     async def retry_failed_replies(self) -> int:
         """Operator-requested recovery; never revive expired content or old ownership."""
         async with self.store.write() as connection:
-            ids: list[int] = list(
+            cutoff = time.time() - self.settings.raw_input_retention_days * 86400
+            pending = await connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(outbox)
+                .where(outbox.c.status.in_(["queued", "sending"]))
+            )
+            available = max(0, MAX_PENDING_REPLIES - int(pending or 0))
+            eligible = sa.and_(
+                outbox.c.chat_id == self.settings.allowed_telegram_chat_id,
+                outbox.c.owner_user_id == self.settings.allowed_telegram_user_id,
+                outbox.c.created_at >= cutoff,
+                outbox.c.kind == "message",
+                sa.func.coalesce(sa.func.json_type(outbox.c.payload, "$.text") == "text", False),
+            )
+            rows = (
                 (
                     await connection.execute(
-                        sa.select(outbox.c.id).where(
-                            outbox.c.status == "failed",
-                            outbox.c.chat_id == self.settings.allowed_telegram_chat_id,
-                            outbox.c.owner_user_id == self.settings.allowed_telegram_user_id,
-                            outbox.c.created_at
-                            >= time.time() - self.settings.raw_input_retention_days * 86400,
-                            outbox.c.kind == "message",
-                        )
+                        sa.select(outbox)
+                        .where(outbox.c.status == "failed", eligible)
+                        .order_by(outbox.c.id)
                     )
-                ).scalars()
+                )
+                .mappings()
+                .all()
             )
+            groups: dict[str, list[int]] = {}
+            for row in rows:
+                payload = row["payload"]
+                group = payload.get("message_group") if isinstance(payload, dict) else None
+                group_key = group if isinstance(group, str) else f"reply:{row['id']}"
+                groups.setdefault(group_key, []).append(row["id"])
+            ids: list[int] = []
+            for group, candidates in groups.items():
+                if len(candidates) > available:
+                    continue
+                invalid_ancestor = await connection.scalar(
+                    sa.select(outbox.c.id)
+                    .where(
+                        outbox.c.payload["message_group"].as_string() == group,
+                        outbox.c.status != "sent",
+                        ~eligible,
+                    )
+                    .limit(1)
+                )
+                if invalid_ancestor is not None:
+                    continue
+                ids.extend(candidates)
+                available -= len(candidates)
             if ids:
                 await connection.execute(
                     sa.update(outbox)

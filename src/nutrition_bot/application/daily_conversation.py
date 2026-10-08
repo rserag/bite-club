@@ -17,7 +17,7 @@ def _reply(text: str, day: date, *, short: bool) -> MealReply:
     return MealReply(
         text,
         "daily_report",
-        buttons=("full" if short else "short", "complete", "incomplete", "add"),
+        buttons=("add", "full" if short else "short", "complete", "incomplete"),
         daily_date=day.isoformat(),
     )
 
@@ -36,7 +36,13 @@ async def handle_daily_message(
     selected: str | None = None
     if normalized in {"all food logged", "mark today complete", "/today complete"}:
         selected = "complete"
-    elif normalized in {"today is incomplete", "mark today incomplete", "/today incomplete"}:
+    elif normalized in {
+        "not all logged",
+        "not all food logged",
+        "today is incomplete",
+        "mark today incomplete",
+        "/today incomplete",
+    }:
         selected = "incomplete"
     if selected:
         try:

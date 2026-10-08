@@ -23,6 +23,7 @@ from nutrition_bot.domain.recipes import (
 )
 from nutrition_bot.runtime.worker import send_one
 from tests.helpers import FakeGateway, message
+from tests.test_draft_presentation import process_parts
 from tests.test_telegram_drafts import press as approve_draft
 from tests.test_telegram_meals import catalog as catalog
 from tests.test_telegram_meals import food_record, process
@@ -279,10 +280,14 @@ async def test_ten_uncertain_recipe_ingredients_fit_telegram_with_long_unicode_n
         store,
         message(1, f"/recipe create {name} = {ingredients} | yield about 50000g"),
     )
-    drafted = await process(service, store, message(2, "/recipe log R1v1 about 49999.999g"))
-    saved = await process(service, store, approve_draft(drafted, update_id=3))
+    drafted, draft_parts = await process_parts(
+        service, store, message(2, "/recipe log R1v1 about 49999.999g")
+    )
+    saved, saved_parts = await process_parts(service, store, approve_draft(drafted, update_id=3))
     favorite = await process(service, store, message(4, f"/favorite save {name} = M1r1"))
     for response in (created, drafted, saved, favorite):
         text = response["payload"]["text"]
         assert "Nothing was changed" not in text
         assert len(text.encode("utf-16-le")) // 2 <= 4096
+    for parts in (draft_parts, saved_parts):
+        assert "".join(part["payload"]["text"] for part in parts).count("𝓐" * 500) == 10

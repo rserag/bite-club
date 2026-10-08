@@ -128,14 +128,11 @@ async def draft_receipt(
             else "unresolved"
         )
         lines.append(
-            f"{index}. {amount} · {_short(food.record.name, 30 if item.recipe_share else 40)} "
+            f"\n{index}. {amount} · {food.record.name} "
             f"({food.record.preparation}; #{food.version_id}; {state})"
         )
         if item.estimate_basis:
-            lines.append(
-                "   Basis: "
-                + _short(" ".join(item.estimate_basis.split()), 45 if item.recipe_share else 80)
-            )
+            lines.append("   Basis: " + " ".join(item.estimate_basis.split()))
     unresolved = any(item.edible_milligrams is None for item in content.items)
     lines.append(
         "Not in your totals. Review the food choices and quantities, then tap Approve draft."

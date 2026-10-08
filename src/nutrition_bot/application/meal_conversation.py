@@ -26,6 +26,7 @@ from nutrition_bot.adapters.database.meals import (
     undo_meal,
 )
 from nutrition_bot.adapters.database.schema import food_versions, foods, meals, outbox
+from nutrition_bot.application.food_display import food_display_name
 from nutrition_bot.application.recipe_display import portion_mass, share_lines
 from nutrition_bot.domain.aliases import AliasError
 from nutrition_bot.domain.drafts import DraftError
@@ -76,70 +77,198 @@ def _reference(meal: MealSnapshot) -> str:
     return f"M{meal.id}r{meal.revision_number}"
 
 
-def receipt(meal: MealSnapshot, lead: str = "Meal") -> MealReply:
-    lines = [
-        f"{lead} {_reference(meal)} · {meal.local_date.isoformat()} · {_short(meal.label, 60)}"
-    ]
-    if meal.deleted:
-        lines.append("Deleted from your diary; history is retained.")
-    lines.extend(share_lines(item.recipe_share for item in meal.items))
-    for index, item in enumerate(meal.items, 1):
-        mass = portion_mass(item.edible_milligrams, item.recipe_share)
-        name_limit = (
-            35 if item.recipe_share else 55 if item.quantity_method == "approved_estimate" else 90
+def _nutrient_total(meal: MealSnapshot, code: str, label: str, suffix: str) -> str:
+    known = 0
+    missing = 0
+    for item in meal.items:
+        amount = next((n.amount_scaled for n in item.nutrients if n.code == code), None)
+        if amount is None:
+            missing += 1
+        else:
+            known += amount
+    if missing == len(meal.items):
+        return f"{label}: unknown"
+    with localcontext() as decimal_context:
+        decimal_context.prec = 50
+        value = (Decimal(known) / 1_000_000).quantize(
+            Decimal("1" if code == "energy" else "0.1"), rounding=ROUND_HALF_UP
         )
+    return f"{label}: {value} {suffix}" + (
+        f" known (partial; {missing} item(s) unknown)" if missing else ""
+    )
+
+
+def _summary_lines(meal: MealSnapshot) -> list[str]:
+    if meal.deleted:
+        return ["Removed from your recorded totals; history is retained."]
+    energy = _nutrient_total(meal, "energy", "Energy", "kcal")
+    if any(item.quantity_method == "approved_estimate" for item in meal.items):
+        energy += " · approximate portions"
+    return [
+        energy,
+        " · ".join(
+            _nutrient_total(meal, code, label, "g")
+            for code, label in (("protein", "P"), ("carbohydrate", "C"), ("fat", "F"))
+        ),
+    ]
+
+
+def _undo_button(meal: MealSnapshot) -> str | None:
+    if meal.operation == "undo":
+        return None
+    if meal.operation == "delete":
+        return "restore"
+    return "undo_save" if meal.operation == "create" else "undo_edit"
+
+
+def _undo_result(meal: MealSnapshot) -> str:
+    if meal.operation == "delete":
+        return "Restored"
+    return "Save undone" if meal.operation == "create" else "Edit undone"
+
+
+def _receipt_reply(meal: MealSnapshot, lines: list[str], buttons: list[str]) -> MealReply:
+    return MealReply("\n".join(lines), "meal_receipt", meal.id, meal.revision_id, tuple(buttons))
+
+
+def receipt(meal: MealSnapshot, lead: str = "Meal") -> MealReply:
+    lines = [f"{lead} {_reference(meal)} · {meal.local_date.isoformat()}"]
+    if meal.label != "Meal":
+        lines.append(_short(meal.label, 60))
+    lines.extend(_summary_lines(meal))
+    lines.append("")
+    recipe_lines = share_lines(item.recipe_share for item in meal.items)
+    if recipe_lines:
+        lines.extend(recipe_lines)
+        lines.append("")
+    mixed_methods = len({item.quantity_method for item in meal.items}) > 1
+    bases: dict[str, list[int]] = {}
+    for index, item in enumerate(meal.items, 1):
+        method = ""
+        if item.quantity_method == "approved_estimate":
+            method = " · estimated"
+        elif mixed_methods:
+            method = " · measured"
         lines.append(
-            f"{index}. {mass} "
-            f"{_short(item.food_name, name_limit)} "
-            f"({item.preparation}; #{item.food_version_id})"
-            + (" · approved estimate" if item.quantity_method == "approved_estimate" else "")
+            f"{index}. {portion_mass(item.edible_milligrams, item.recipe_share)} "
+            f"{food_display_name(item.food_name, item.preparation)}{method}"
         )
         if item.quantity_basis:
-            lines.append(
-                "   Basis: "
-                + _short(" ".join(item.quantity_basis.split()), 45 if item.recipe_share else 60)
+            basis = " ".join(item.quantity_basis.split())
+            bases.setdefault(basis, []).append(index)
+    if bases:
+        lines.append("")
+        for basis, indexes in bases.items():
+            affected = ", ".join(map(str, indexes))
+            lines.append(f"Estimate basis (items {affected}): {_short(basis, 120)}")
+    if not meal.deleted:
+        lines.extend(
+            ("", "Choose Edit to correct this meal; Details shows sources and quantities.")
+        )
+        buttons = ["repeat", "edit"]
+    else:
+        lines.extend(("", "Choose Edit to restore this meal with a corrected item or replacement."))
+        buttons = ["edit"]
+    if undo := _undo_button(meal):
+        buttons.append(undo)
+    buttons.append("details")
+    if not meal.deleted:
+        buttons.append("more")
+    return _receipt_reply(meal, lines, buttons)
+
+
+def receipt_details(meal: MealSnapshot) -> MealReply:
+    lines = [
+        f"Meal details · {_reference(meal)} · {meal.local_date.isoformat()}",
+        f"Name: {meal.label}",
+        f"Revision: {meal.revision_number} · operation: {meal.operation}",
+        f"Recorded date timezone: {meal.timezone}",
+        *_summary_lines(meal),
+    ]
+    if not meal.deleted:
+        lines.append(_nutrient_total(meal, "fiber", "Fiber", "g"))
+    lines.extend(("", *share_lines(item.recipe_share for item in meal.items)))
+    for index, item in enumerate(meal.items, 1):
+        method = "approved estimate" if item.quantity_method == "approved_estimate" else "measured"
+        lines.extend(
+            (
+                "",
+                f"{index}. {item.food_name}",
+                f"Food version: #{item.food_version_id} · preparation: "
+                f"{item.preparation.replace('_', ' ')}",
+                f"Quantity: {portion_mass(item.edible_milligrams, item.recipe_share)} · {method}",
+                f"Original quantity: {item.original_quantity} {item.original_unit}"
+                + (" (batch ingredient)" if item.recipe_share else ""),
+                f"Source: {item.source_kind} · {item.source_reference}",
+                f"License: {item.source_license}",
             )
+        )
+        if item.source_url:
+            lines.append(f"Source URL: {item.source_url}")
+        if item.quantity_basis:
+            lines.append(f"Estimate basis: {item.quantity_basis}")
+        if item.approval_draft_id is not None:
+            lines.append(
+                f"Approved draft: D{item.approval_draft_id}r{item.approval_draft_revision}"
+            )
+        if item.approved_at is not None:
+            approved = datetime.fromtimestamp(item.approved_at, UTC).isoformat()
+            lines.append(f"Approved at: {approved}")
+        if item.approval_action_key:
+            lines.append(f"Approval action: {item.approval_action_key}")
+        if item.recipe_share:
+            share = item.recipe_share
+            lines.append(
+                f"Recipe ingredient {share.ingredient_index + 1}: "
+                f"R{share.recipe_id}v{share.version_number} · {share.name} · "
+                f"version #{share.version_id}"
+            )
+            if share.yield_estimate_basis:
+                lines.append(f"Batch yield basis: {share.yield_estimate_basis}")
+            if share.portion_estimate_basis:
+                lines.append(f"Recipe portion basis: {share.portion_estimate_basis}")
+        if item.provenance:
+            provenance = item.provenance
+            lines.append(
+                f"External source ID: {provenance.external_id} · type: {provenance.data_type}"
+            )
+            fetched = datetime.fromtimestamp(provenance.fetched_at, UTC).isoformat()
+            lines.append(f"Source fetched at: {fetched}")
+            if provenance.published_date:
+                lines.append(f"Source published: {provenance.published_date}")
+            lines.append(f"Source adapter: {provenance.adapter_version}")
+            lines.extend(f"Source caveat: {warning}" for warning in provenance.warnings)
+        lines.extend(
+            (
+                f"Immutable food snapshot: {item.food_content_sha256}",
+                f"Calculation: {item.calculation_version}",
+            )
+        )
+        missing = [nutrient.code for nutrient in item.nutrients if nutrient.amount_scaled is None]
+        if missing:
+            lines.append("Unknown nutrient data: " + ", ".join(missing))
+    lines.extend(("", "Sources and approval provenance belong to this immutable meal revision."))
+    buttons = ["compact"]
+    if meal.deleted:
+        if undo := _undo_button(meal):
+            buttons.append(undo)
+    else:
+        buttons.append("more")
+    return _receipt_reply(meal, lines, buttons)
+
+
+def receipt_more(meal: MealSnapshot) -> MealReply:
+    lines = [
+        f"More meal actions · {_reference(meal)} · {meal.local_date.isoformat()}",
+        "Save this meal as a favorite, or delete it from your recorded totals.",
+        "Deleting keeps its correction history and offers Restore meal.",
+    ]
+    buttons = ["compact", "details"]
     if not meal.deleted:
-        totals = []
-        for code, label, suffix in (
-            ("energy", "Energy", "kcal"),
-            ("protein", "P", "g"),
-            ("carbohydrate", "C", "g"),
-            ("fat", "F", "g"),
-            ("fiber", "Fiber", "g"),
-        ):
-            known = 0
-            missing = 0
-            for item in meal.items:
-                amount = next((n.amount_scaled for n in item.nutrients if n.code == code), None)
-                if amount is None:
-                    missing += 1
-                else:
-                    known += amount
-            if missing == len(meal.items):
-                totals.append(f"{label}: unknown")
-            else:
-                with localcontext() as decimal_context:
-                    decimal_context.prec = 50
-                    value = (Decimal(known) / 1_000_000).quantize(
-                        Decimal("1" if code == "energy" else "0.1"), rounding=ROUND_HALF_UP
-                    )
-                totals.append(
-                    f"{label}: {value} {suffix}"
-                    + (f" known ({missing} unknown)" if missing else "")
-                )
-        lines.append(" · ".join(totals))
-    lines.append(
-        "Reply with 'portion 250g' (or servings), date, delete, or undo."
-        if any(item.recipe_share for item in meal.items)
-        else "Reply to this receipt to change an item, date, delete, or undo."
-    )
-    buttons = ["edit"]
-    if not meal.deleted:
-        buttons.extend(("repeat", "save", "delete"))
-    if meal.operation != "undo":
-        buttons.append("undo")
-    return MealReply("\n".join(lines), "meal_receipt", meal.id, meal.revision_id, tuple(buttons))
+        buttons.extend(("save", "delete"))
+    elif undo := _undo_button(meal):
+        buttons.append(undo)
+    return _receipt_reply(meal, lines, buttons)
 
 
 def help_reply() -> MealReply:
@@ -366,7 +495,8 @@ async def _correct_measured(
         )
     if folded in {"undo", "undo last change"}:
         return receipt(
-            await undo_meal(connection, meal.id, meal.revision_id, action_key=action_key), "Undone"
+            await undo_meal(connection, meal.id, meal.revision_id, action_key=action_key),
+            _undo_result(meal),
         )
     date_match = re.fullmatch(
         r"(?:date|move to|move this to)\s+(today|yesterday|\d{4}-\d{2}-\d{2})", folded
@@ -851,13 +981,20 @@ async def handle_callback(
             return receipt(
                 meal, "That button belongs to an older receipt. No change saved. Current meal:"
             )
+        if action == "details":
+            return receipt_details(meal)
+        if action == "compact":
+            return receipt(meal)
+        if action == "more":
+            return receipt_more(meal)
         if action == "edit":
-            result = receipt(
-                meal,
-                "Reply to this receipt with 'item 1: 120g', 'replace: ...', "
-                "'date yesterday', 'delete', or 'undo'.",
+            result = receipt(meal)
+            correction = (
+                "Reply with 'portion 250g' (or servings), 'date yesterday', or 'replace: ...'."
+                if any(item.recipe_share for item in meal.items)
+                else "Reply with 'item 1: 120g', 'replace: ...', or 'date yesterday'."
             )
-            return result
+            return _receipt_reply(meal, [result.text, "", correction], list(result.buttons))
         if action == "delete":
             if meal.deleted:
                 raise MealError("That meal is already deleted.")
@@ -869,8 +1006,13 @@ async def handle_callback(
                 deleted=True,
                 operation="delete",
             )
-        elif action == "undo":
+            return receipt(meal, "Deleted")
+        elif action in {"undo", "undo_save", "undo_edit", "restore"}:
+            if action != "undo" and action != _undo_button(meal):
+                raise MealError("That undo action does not match this meal revision.")
+            lead = _undo_result(meal)
             meal = await undo_meal(connection, meal.id, meal.revision_id, action_key=action_key)
+            return receipt(meal, lead)
         else:
             raise MealError("Unknown meal action.")
         return receipt(meal, "Updated")

@@ -89,9 +89,11 @@ async def test_approval_saves_exact_displayed_revision_and_visible_provenance(
     assert "estimate" in approved["payload"]["text"].lower()
     assert (await draft(store)).state == "saved" and (await draft(store)).content is None
     report = await process(service, store, message(3, "/today"))
-    assert "approved estimate 1" in report["payload"]["text"]
+    assert "Portions (entries):" not in report["payload"]["text"]
     assert "approximate" in report["payload"]["text"]
     assert "550 kcal" in report["payload"]["text"]
+    detailed = await process(service, store, message(4, "/today full"))
+    assert "approved estimate 1" in detailed["payload"]["text"]
 
 
 @pytest.mark.parametrize("text", ["yes", "ok", "okay", "approve", "approve estimate", "save"])
