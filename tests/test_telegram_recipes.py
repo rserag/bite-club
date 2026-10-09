@@ -56,11 +56,11 @@ async def test_definition_and_preview_do_not_log_consumption(service, store, cat
         "Archive",
     }
     listing = await process(service, store, message(2, "/recipes"))
-    assert "R1v1" in listing["payload"]["text"]
+    assert "chili" in {button["text"] for button in listing["payload"]["buttons"]}
     opened = await process(service, store, message(3, "/recipe R1"))
     assert opened["payload"]["recipe_version_id"] == created["payload"]["recipe_version_id"]
     requested = await process(service, store, press(opened, update_id=4))
-    assert "portion" in requested["payload"]["text"].lower()
+    assert "How much chili did you eat?" in requested["payload"]["text"]
     assert await ledger_counts(store) == (0, 0)
 
 

@@ -25,6 +25,7 @@ from nutrition_bot.adapters.database.schema import (
 )
 from nutrition_bot.adapters.database.schema_drafts import draft_action_links
 from nutrition_bot.adapters.database.store import Store
+from nutrition_bot.application.food_catalog import FoodCatalog, SearchResult, SourcePreview
 from nutrition_bot.application.meal_conversation import MealReply, handle_message
 from nutrition_bot.config import BotSettings
 from nutrition_bot.telegram.auth import authorized
@@ -59,10 +60,17 @@ class _HeartbeatProgress:
 
 
 class Service:
-    def __init__(self, store: Store, settings: BotSettings, ai_service: "AiService | None" = None):
+    def __init__(
+        self,
+        store: Store,
+        settings: BotSettings,
+        ai_service: "AiService | None" = None,
+        food_catalog: FoodCatalog | None = None,
+    ):
         self.store = store
         self.settings = settings
         self.ai_service = ai_service
+        self.food_catalog = food_catalog or FoodCatalog(store, None)
         self.gateway: Gateway | None = None
         self._heartbeat_lock = asyncio.Lock()
         self._heartbeat_progress: dict[str, _HeartbeatProgress] = {}
@@ -217,6 +225,181 @@ class Service:
             created_at=created_at,
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
+
+    async def recover_food_lookups(self) -> None:
+        from nutrition_bot.adapters.database.schema_food_discovery import food_lookup_jobs
+
+        async with self.store.write() as connection:
+            await connection.execute(
+                sa.update(food_lookup_jobs)
+                .where(food_lookup_jobs.c.status == "running")
+                .values(status="pending", lease_until=None)
+            )
+
+    async def process_food_lookup(self) -> bool:
+        """One bounded external lookup; the ordinary command processor stays available."""
+        from nutrition_bot.adapters.database.schema_food_discovery import food_lookup_jobs as jobs
+        from nutrition_bot.adapters.database.schema_ui import ui_flows
+        from nutrition_bot.application.food_discovery import (
+            FLOW_TTL_SECONDS,
+            apply_preview_result,
+            apply_search_result,
+        )
+
+        now = time.time()
+        async with self.store.write() as connection:
+            job = (
+                (
+                    await connection.execute(
+                        sa.select(jobs)
+                        .where(
+                            sa.or_(
+                                jobs.c.status == "pending",
+                                sa.and_(jobs.c.status == "running", jobs.c.lease_until <= now),
+                            )
+                        )
+                        .order_by(jobs.c.created_at, jobs.c.id)
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if job is None:
+                return False
+            flow = (
+                (
+                    await connection.execute(
+                        sa.select(ui_flows).where(ui_flows.c.owner_id == job["owner_id"])
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            allowed = (
+                job["owner_id"] == self.settings.allowed_telegram_user_id
+                and job["chat_id"] == self.settings.allowed_telegram_chat_id
+                and flow is not None
+                and flow["revision"] == job["flow_revision"]
+                and now - flow["updated_at"] < FLOW_TTL_SECONDS
+                and flow["stage"] in {"food_discovery_choices", "food_discovery_wait"}
+            )
+            if not allowed:
+                await connection.execute(
+                    sa.update(jobs)
+                    .where(jobs.c.id == job["id"])
+                    .values(status="cancelled", request=None, completed_at=now, lease_until=None)
+                )
+                return True
+            await connection.execute(
+                sa.update(jobs)
+                .where(jobs.c.id == job["id"])
+                .values(
+                    status="running", attempts=min(job["attempts"] + 1, 3), lease_until=now + 40
+                )
+            )
+        request = job["request"]
+        result: SearchResult | SourcePreview
+        try:
+            if not isinstance(request, dict) or job["attempts"] >= 3:
+                raise ValueError("Invalid or repeatedly interrupted lookup")
+            async with asyncio.timeout(35):
+                if job["kind"] == "search":
+                    result = await self.food_catalog.search(
+                        request["query"],
+                        remote=True,
+                        preparation=request.get("preparation"),
+                        provider=request.get("provider", "usda"),
+                    )
+                else:
+                    result = await self.food_catalog.lookup(
+                        request["source_id"], provider=request.get("provider", "usda")
+                    )
+        except (ValueError, KeyError, TimeoutError):
+            result = (
+                SearchResult(local=(), source_status="unavailable")
+                if job["kind"] == "search"
+                else SourcePreview(source_status="unavailable")
+            )
+        try:
+            async with self.store.write() as connection:
+                current = (
+                    (await connection.execute(sa.select(jobs).where(jobs.c.id == job["id"])))
+                    .mappings()
+                    .one()
+                )
+                flow = (
+                    (
+                        await connection.execute(
+                            sa.select(ui_flows).where(ui_flows.c.owner_id == job["owner_id"])
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                valid = (
+                    current["status"] == "running"
+                    and flow is not None
+                    and flow["revision"] == job["flow_revision"]
+                    and time.time() - flow["updated_at"] < FLOW_TTL_SECONDS
+                    and job["owner_id"] == self.settings.allowed_telegram_user_id
+                    and job["chat_id"] == self.settings.allowed_telegram_chat_id
+                )
+                if not valid:
+                    await connection.execute(
+                        sa.update(jobs)
+                        .where(jobs.c.id == job["id"])
+                        .values(
+                            status="cancelled",
+                            request=None,
+                            completed_at=time.time(),
+                            lease_until=None,
+                        )
+                    )
+                    return True
+                assert flow is not None
+                if isinstance(result, SearchResult):
+                    reply = await apply_search_result(
+                        connection, job["owner_id"], flow["payload"], result
+                    )
+                else:
+                    reply = await apply_preview_result(
+                        connection, job["owner_id"], flow["payload"], result
+                    )
+                key = job["id"] + ":result"
+                update_id = await connection.scalar(
+                    sa.select(actions.c.update_id).where(actions.c.key == job["action_key"])
+                )
+                await connection.execute(
+                    sa.insert(actions).values(
+                        key=key,
+                        update_id=update_id,
+                        kind="food_lookup_result",
+                        created_at=time.time(),
+                    )
+                )
+                token = uuid.uuid4().hex
+                revision = await connection.scalar(
+                    sa.select(ui_flows.c.revision).where(ui_flows.c.owner_id == job["owner_id"])
+                )
+                payload = {
+                    "text": reply.text,
+                    "ui_requests": [request for _, request in reply.ui_buttons],
+                    "food_flow_revision": revision,
+                    "buttons": [
+                        {"text": label, "callback_data": f"ui:{i}:{token}"}
+                        for i, (label, _) in enumerate(reply.ui_buttons)
+                    ],
+                }
+                await self._reply(connection, key, "message", payload, token)
+                await connection.execute(
+                    sa.update(jobs)
+                    .where(jobs.c.id == job["id"])
+                    .values(status="done", request=None, completed_at=time.time(), lease_until=None)
+                )
+        except QueueFullError:
+            return False
+        return True
 
     async def _process_one(self, prepared: dict[int, "AiOutcome"]) -> bool:
         processing_started = time.monotonic()
@@ -609,6 +792,7 @@ class Service:
                             bot_id=self.settings.bot_id,
                             owner_id=self.settings.allowed_telegram_user_id,
                             retention_days=self.settings.raw_input_retention_days,
+                            food_discovery_remote_enabled=self.food_catalog.provider is not None,
                         )
                     elif command == "supplement_plan_callback":
                         from nutrition_bot.application.supplement_plan_conversation import (
@@ -722,13 +906,23 @@ class Service:
                             handle_recipe_callback,
                         )
 
-                        result = await handle_recipe_callback(
-                            connection,
-                            callback_action,
-                            button_payload["recipe_id"],
-                            button_payload["recipe_version_id"],
-                            action_key=key,
-                        )
+                        if callback_action == "portion":
+                            from nutrition_bot.application.recipe_guide import start_portion
+
+                            result = await start_portion(
+                                connection,
+                                self.settings.allowed_telegram_user_id,
+                                button_payload["recipe_id"],
+                                button_payload["recipe_version_id"],
+                            )
+                        else:
+                            result = await handle_recipe_callback(
+                                connection,
+                                callback_action,
+                                button_payload["recipe_id"],
+                                button_payload["recipe_version_id"],
+                                action_key=key,
+                            )
                     elif command == "goal_callback":
                         from nutrition_bot.application.goal_conversation import (
                             handle_goal_callback,
@@ -830,7 +1024,25 @@ class Service:
                                     bot_id=self.settings.bot_id,
                                     owner_id=self.settings.allowed_telegram_user_id,
                                     retention_days=self.settings.raw_input_retention_days,
+                                    food_discovery_remote_enabled=self.food_catalog.provider
+                                    is not None,
                                 )
+                        if (
+                            result is None
+                            and not update.edited_message
+                            and not message.reply_to_message
+                        ):
+                            from nutrition_bot.application.food_discovery import (
+                                source_command,
+                            )
+
+                            result = await source_command(
+                                connection,
+                                message.text or "",
+                                message,
+                                action_key=key,
+                                reference=message_reference,
+                            )
                         if result is None and row["update_id"] in prepared:
                             from nutrition_bot.application.ai_service import create_ai_draft
 
@@ -850,16 +1062,40 @@ class Service:
                                 and not message.reply_to_message
                             ):
                                 raise _NeedsAi(row["update_id"], message, message_reference)
-                            result = await handle_message(
-                                connection,
-                                message,
-                                action_key=key,
-                                timezone=timezone or self.settings.app_timezone,
-                                bot_id=self.settings.bot_id,
-                                owner_id=self.settings.allowed_telegram_user_id,
-                                edited=update.edited_message is not None,
-                                retention_days=self.settings.raw_input_retention_days,
-                            )
+                            async with connection.begin_nested() as command_savepoint:
+                                result = await handle_message(
+                                    connection,
+                                    message,
+                                    action_key=key,
+                                    timezone=timezone or self.settings.app_timezone,
+                                    bot_id=self.settings.bot_id,
+                                    owner_id=self.settings.allowed_telegram_user_id,
+                                    edited=update.edited_message is not None,
+                                    retention_days=self.settings.raw_input_retention_days,
+                                )
+                                if result.kind == "meal_rejected":
+                                    await command_savepoint.rollback()
+                            if (
+                                result.kind == "meal_rejected"
+                                and not update.edited_message
+                                and not message.reply_to_message
+                                and row["update_id"] not in prepared
+                            ):
+                                from nutrition_bot.application.food_discovery import (
+                                    discover_measured_message,
+                                )
+
+                                discovery = await discover_measured_message(
+                                    connection,
+                                    message.text or "",
+                                    message,
+                                    action_key=key,
+                                    reference=message_reference,
+                                    owner_id=self.settings.allowed_telegram_user_id,
+                                    remote_enabled=self.food_catalog.provider is not None,
+                                )
+                                if discovery is not None:
+                                    result = discovery
                     if (
                         result.kind == "meal_rejected"
                         and self.ai_service
@@ -882,6 +1118,7 @@ class Service:
                         "training_rejected",
                         "recovery_rejected",
                         "supplement_rejected",
+                        "food_source_rejected",
                     }:
                         await savepoint.rollback()
                 text, kind = result.text, result.kind
@@ -920,6 +1157,8 @@ class Service:
                 sa.update(actions).where(actions.c.key == key).values(kind=kind)
             )
             payload: dict[str, Any] = {"text": text}
+            if result and result.label_handoff:
+                payload["label_handoff"] = True
             reply_token = (
                 uuid.uuid4().hex
                 if kind in {"start", "status"}
@@ -1313,6 +1552,37 @@ class Service:
                 )
             ):
                 return None
+            payload = current["payload"]
+            if isinstance(payload, dict) and "food_flow_revision" in payload:
+                from nutrition_bot.adapters.database.schema_ui import ui_flows
+
+                flow = (
+                    (
+                        await connection.execute(
+                            sa.select(ui_flows).where(
+                                ui_flows.c.owner_id == self.settings.allowed_telegram_user_id
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if (
+                    flow is None
+                    or flow["revision"] != payload["food_flow_revision"]
+                    or flow["updated_at"] < time.time() - 1800
+                ):
+                    await connection.execute(
+                        sa.update(outbox)
+                        .where(outbox.c.id == current["id"])
+                        .values(
+                            status="failed",
+                            payload=None,
+                            button_token=None,
+                            error_type="FoodFlowChanged",
+                        )
+                    )
+                    return None
             return (
                 (await connection.execute(sa.select(outbox).where(outbox.c.id == row["id"])))
                 .mappings()

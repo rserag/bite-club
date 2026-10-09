@@ -3,12 +3,13 @@
 import asyncio
 import hashlib
 import json
+import re
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime
 from importlib.resources import files
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -17,11 +18,13 @@ from aiogram.types import Update
 from aiohttp import web
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from nutrition_bot.adapters.database.foods import normalize_food
+from nutrition_bot.adapters.database.meals import get_meal
 from nutrition_bot.adapters.database.schema import actions, inbox, outbox, profile
 from nutrition_bot.application.service import QueueFullError, Service
-from nutrition_bot.domain.food import exact_decimal, grams_to_milligrams
+from nutrition_bot.domain.food import Preparation, exact_decimal, grams_to_milligrams
 from nutrition_bot.miniapp.auth import AuthenticationError, authenticate
-from nutrition_bot.miniapp.reads import dashboard, food_choices, meal_history
+from nutrition_bot.miniapp.reads import amount, dashboard, food_choices, meal_history
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 SECURITY_HEADERS = {
@@ -44,37 +47,114 @@ class Portion(BaseModel):
     grams: str = Field(pattern=r"^[0-9]{1,5}(?:\.[0-9]{1,3})?$", max_length=9)
 
 
+class SourceSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    provider: Literal["usda", "openfoodfacts"] = "usda"
+    source_id: str = Field(pattern=r"^[0-9]{1,14}$")
+    hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    preparation: Literal["raw", "cooked", "as_sold", "as_prepared"]
+
+
+class SourcePortion(SourceSelection):
+    grams: str = Field(pattern=r"^[0-9]{1,5}(?:\.[0-9]{1,3})?$", max_length=9)
+
+
 class RequestCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     request_id: str = Field(min_length=36, max_length=36)
-    action: Literal["meal", "edit", "delete", "undo", "repeat", "favorite", "save_favorite"]
+    action: Literal[
+        "meal",
+        "source_meal",
+        "source_add",
+        "label_handoff",
+        "edit",
+        "recipe_portion",
+        "delete",
+        "undo",
+        "repeat",
+        "favorite",
+        "save_favorite",
+    ]
     reference: str | None = Field(default=None, max_length=45)
     day: str | None = Field(default=None, pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
     label: Literal["Breakfast", "Lunch", "Dinner", "Snack", "Meal"] = "Meal"
-    items: list[Portion] = Field(default_factory=list, max_length=10)
+    items: list[Portion | SourcePortion] = Field(default_factory=list, max_length=10)
     name: str | None = Field(default=None, min_length=1, max_length=60, pattern=r"^[^=\n\r]+$")
+    portion: str | None = Field(default=None, pattern=r"^[0-9]{1,5}(?:\.[0-9]{1,3})?$")
+    unit: Literal["g", "serving"] | None = None
+    estimated: bool = False
+    detach_recipe: bool = False
+    source: SourceSelection | None = None
 
     def command(self) -> str:
         request_uuid = UUID(self.request_id)
         if str(request_uuid) != self.request_id or request_uuid.version != 4:
             raise ValueError("Use a new request identifier.")
-        if self.action in {"meal", "edit"}:
-            if not self.items:
+        if self.detach_recipe and self.action != "edit":
+            raise ValueError("Recipe conversion is only available for a full meal replacement.")
+        if self.action == "source_add":
+            if (
+                self.source is None
+                or self.items
+                or self.portion is not None
+                or self.unit is not None
+            ):
+                raise ValueError("Review the exact food source before adding it.")
+            source = self.source
+            return (
+                f"/source-add {source.source_id} {source.hash} "
+                f"{source.preparation} {source.provider}"
+            )
+        if self.source is not None:
+            raise ValueError("Only adding a food accepts a source selection.")
+        if self.action == "recipe_portion":
+            if self.items or self.detach_recipe or not self.portion or self.unit is None:
+                raise ValueError("Choose a recipe portion in its original unit.")
+            maximum = 50_000_000 if self.unit == "g" else 1_000_000
+            if not 0 < grams_to_milligrams(exact_decimal(self.portion)) <= maximum:
+                raise ValueError("Choose a positive portion within the saved batch.")
+            approximate = "about " if self.estimated else ""
+            return f"/edit {self.meal_reference()} portion {approximate}{self.portion} {self.unit}"
+        if self.portion is not None or self.unit is not None or self.estimated:
+            raise ValueError("Only a recipe portion accepts this amount and unit.")
+        if self.action in {"meal", "source_meal", "label_handoff", "edit"}:
+            if not self.items and self.action != "label_handoff":
                 raise ValueError("Choose a saved food and measured grams.")
             for item in self.items:
                 if not 0 < grams_to_milligrams(exact_decimal(item.grams)) <= 50_000_000:
                     raise ValueError("Use measured grams between 0.001 and 50000.")
-            portions = "; ".join(f"{item.grams}g #{item.version_id}" for item in self.items)
+            if self.action in {"source_meal", "label_handoff"}:
+                if not self.day:
+                    raise ValueError("Choose the meal date.")
+                if self.action == "label_handoff" and len(self.items) > 9:
+                    raise ValueError("Leave room for the label food in the ten-entry meal.")
+                if self.action == "source_meal" and not any(
+                    isinstance(item, SourcePortion) for item in self.items
+                ):
+                    raise ValueError("Review a food source and choose the meal date.")
+                payload = {
+                    "label": self.label,
+                    "date": self.day,
+                    "items": [item.model_dump() for item in self.items],
+                }
+                prefix = "/source-label " if self.action == "label_handoff" else "/source-meal "
+                return prefix + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            if any(isinstance(item, SourcePortion) for item in self.items):
+                raise ValueError("Use the source meal action for reviewed new sources.")
+            portions = "; ".join(
+                f"{item.grams}g #{item.version_id}"
+                for item in self.items
+                if isinstance(item, Portion)
+            )
             if self.action == "meal":
                 prefix = f"{self.day} " if self.day else ""
                 label = f"{self.label}: " if self.label != "Meal" else ""
                 return f"/meal {prefix}{label}{portions}"
-            return f"/edit {self.meal_reference()} replace: {portions}"
+            replacement = "replace meal:" if self.detach_recipe else "replace:"
+            return f"/edit {self.meal_reference()} {replacement} {portions}"
         if self.items:
             raise ValueError("This action does not accept food entries.")
         if self.action == "favorite":
-            import re
-
             if not self.reference or not re.fullmatch(r"F[1-9][0-9]*v[1-9][0-9]*", self.reference):
                 raise ValueError("Choose the current favorite.")
             return f"/eat {self.reference}"
@@ -86,8 +166,6 @@ class RequestCommand(BaseModel):
         return f"/{self.action} {reference}"
 
     def meal_reference(self) -> str:
-        import re
-
         if not self.reference or not re.fullmatch(r"M[1-9][0-9]*r[1-9][0-9]*", self.reference):
             raise ValueError("Refresh the meal and choose its current revision.")
         return self.reference
@@ -105,6 +183,7 @@ class MiniApp:
         self.service = service
         self.submit_lock = asyncio.Lock()
         self.requests: deque[float] = deque()
+        self.source_requests: deque[float] = deque()
 
     @web.middleware
     async def secure(self, request: web.Request, handler: Handler) -> web.StreamResponse:
@@ -176,8 +255,53 @@ class MiniApp:
         if len(query) > 100:
             raise web.HTTPBadRequest(text="Use a shorter food name.")
         async with self.service.store.engine.connect() as connection:
-            data = await food_choices(connection, query)
+            data = await food_choices(connection, query, preparation=self.preparation(request))
         return web.json_response({"foods": data})
+
+    @staticmethod
+    def preparation(request: web.Request) -> Preparation | None:
+        value = request.query.get("preparation", "")
+        if not value:
+            return None
+        if value not in {"raw", "cooked", "as_sold", "as_prepared"}:
+            raise web.HTTPBadRequest(text="Choose raw, cooked, packaged or prepared food.")
+        return cast(Preparation, value)
+
+    def limit_source_requests(self) -> None:
+        now = time.monotonic()
+        while self.source_requests and self.source_requests[0] < now - 60:
+            self.source_requests.popleft()
+        if len(self.source_requests) >= 12:
+            raise web.HTTPTooManyRequests(text="Pause briefly before searching another source.")
+        self.source_requests.append(now)
+
+    async def sources(self, request: web.Request) -> web.Response:
+        self.limit_source_requests()
+        query = " ".join(request.query.get("q", "").split())
+        if not 1 <= len(query) <= 120:
+            raise web.HTTPBadRequest(text="Enter a food name before searching sources.")
+        result = await self.service.food_catalog.search(
+            query, remote=True, preparation=self.preparation(request)
+        )
+        return web.json_response(result.model_dump(mode="json"))
+
+    async def source_preview(self, request: web.Request) -> web.Response:
+        self.limit_source_requests()
+        provider = request.query.get("provider", "usda")
+        if provider not in {"usda", "openfoodfacts"}:
+            raise web.HTTPBadRequest(text="Choose a supported food source.")
+        preview = await self.service.food_catalog.lookup(
+            request.match_info["source_id"], provider=provider
+        )
+        result: dict[str, object] = preview.model_dump(mode="json")
+        if preview.document is not None:
+            async with self.service.store.engine.connect() as connection:
+                normalized = await normalize_food(connection, preview.document.record)
+            result["nutrients"] = [
+                {"code": item.code, "unit": item.unit, "per_100g": amount(item.amount_scaled)}
+                for item in normalized
+            ]
+        return web.json_response(result)
 
     async def history(self, request: web.Request) -> web.Response:
         before_text = request.query.get("before")
@@ -218,6 +342,16 @@ class MiniApp:
                 return web.json_response(
                     {"request": command.request_id, "status": previous["status"]}
                 )
+            if command.action == "edit" and not command.detach_recipe:
+                matched = re.fullmatch(r"M([1-9][0-9]*)r([1-9][0-9]*)", command.meal_reference())
+                assert matched is not None
+                async with self.service.store.engine.connect() as connection:
+                    meal = await get_meal(connection, int(matched[1]))
+                if any(item.recipe_share for item in meal.items):
+                    raise web.HTTPConflict(
+                        text="Edit this recipe's cooked portion or servings. Converting it to "
+                        "direct foods requires an explicit full replacement."
+                    )
             synthetic = Update.model_validate(
                 {
                     "update_id": identifier,
@@ -280,6 +414,7 @@ class MiniApp:
                         "text": row["payload"].get("text", ""),
                         "delivery": row["status"],
                         "needs_approval": bool(row["payload"].get("draft_id")),
+                        "continue_in_chat": bool(row["payload"].get("label_handoff")),
                     }
                     for row in rows
                     if isinstance(row["payload"], dict)
@@ -295,6 +430,8 @@ def create_app(service: Service) -> web.Application:
     application.router.add_get("/assets/{asset}", adapter.static)
     application.router.add_get("/api/dashboard", adapter.overview)
     application.router.add_get("/api/foods", adapter.foods)
+    application.router.add_get("/api/food-sources", adapter.sources)
+    application.router.add_get("/api/food-sources/{source_id}", adapter.source_preview)
     application.router.add_get("/api/meals", adapter.history)
     application.router.add_post("/api/commands", adapter.submit)
     application.router.add_get("/api/requests/{request}", adapter.receipt)

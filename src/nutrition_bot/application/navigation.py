@@ -24,6 +24,7 @@ HOME = (
     ("Log food", "log"),
     ("Today", "today"),
     ("Favorites", "favorites"),
+    ("Recipes", "recipes"),
     ("Training", "training"),
     ("Weight", "weight"),
     ("Recovery", "recovery"),
@@ -111,6 +112,7 @@ async def _command(
     bot_id: int,
     owner_id: int,
     retention_days: int,
+    food_discovery_remote_enabled: bool = False,
 ) -> MealReply:
     virtual = message.model_copy(update={"text": text, "reply_to_message": None, "date": reference})
     return await handle_message(
@@ -134,6 +136,7 @@ async def ui_action(
     bot_id: int,
     owner_id: int,
     retention_days: int,
+    food_discovery_remote_enabled: bool = False,
 ) -> MealReply:
     context: dict[str, Any] = dict(
         action_key=action_key,
@@ -141,6 +144,7 @@ async def ui_action(
         bot_id=bot_id,
         owner_id=owner_id,
         retention_days=retention_days,
+        food_discovery_remote_enabled=food_discovery_remote_enabled,
     )
     if action.startswith("flow:"):
         _, rev_text, operation = action.split(":", 2)
@@ -148,10 +152,32 @@ async def ui_action(
         if row is None or row["revision"] != int(rev_text):
             return menu("That step has changed or expired. Start again from the menu.")
         payload = row["payload"]
+        if operation.startswith("recipe:") and row["stage"].startswith("recipe_"):
+            from nutrition_bot.application.recipe_guide import guide_action as recipe_action
+
+            return await recipe_action(connection, row, operation, message, **context)
+        if operation.startswith("label:") and row["stage"].startswith("label_"):
+            from nutrition_bot.application.label_guide import guide_action as label_action
+
+            return await label_action(connection, row, operation, message, **context)
+        if operation.startswith("discover:") and row["stage"].startswith("food_discovery_"):
+            from nutrition_bot.application.food_discovery import discovery_action
+
+            return await discovery_action(connection, row, operation, message, **context)
         if operation.startswith("goal:") and row["stage"].startswith("goal_"):
             from nutrition_bot.application.guided_goals import goal_action
 
-            return await goal_action(connection, row, operation, message, **context)
+            return await goal_action(
+                connection,
+                row,
+                operation,
+                message,
+                **{
+                    key: value
+                    for key, value in context.items()
+                    if key != "food_discovery_remote_enabled"
+                },
+            )
         if operation.startswith("food=") and row["stage"] == "food_search":
             food_id = int(operation[5:])
             allowed = payload.get("choices", [])
@@ -193,10 +219,46 @@ async def ui_action(
     if action in {"home", "cancel"}:
         return home()
     if action == "log":
-        await begin(connection, owner_id, "food_search", {"items": []})
+        await begin(
+            connection,
+            owner_id,
+            "food_search",
+            {
+                "items": [],
+                "date": reference.date().isoformat(),
+                "source_chat_id": message.chat.id,
+                "source_message_id": message.message_id,
+            },
+        )
         return menu(
-            "Which food did you eat? Type its name to search your reviewed catalog.",
-            (("Favorites", "favorites"), ("Recent meals", "recent"), ("Cancel", "cancel")),
+            "Which food did you eat? Type a food name or a measured meal, e.g. 80g raw carrot.",
+            (
+                ("Favorites", "favorites"),
+                ("Recent meals", "recent"),
+                ("Product barcode", "barcode"),
+                ("Enter food label", "label"),
+                ("Cancel", "cancel"),
+            ),
+        )
+    if action == "recipes":
+        from nutrition_bot.application.recipe_guide import start as recipe_start
+
+        return await recipe_start(connection, owner_id)
+    if action == "label":
+        from nutrition_bot.application.label_guide import start as label_start
+
+        return await label_start(connection, owner_id)
+    if action == "barcode":
+        await begin(
+            connection,
+            owner_id,
+            "food_barcode",
+            {"items": [], "date": reference.date().isoformat()},
+        )
+        return menu(
+            "Type the product's 8, 12, 13 or 14 digit barcode. "
+            "If it is unavailable, you can enter its nutrition label.",
+            (("Enter food label", "label"), ("Cancel", "cancel")),
         )
     if action in {"weight", "recovery", "gym", "bjj"}:
         await begin(connection, owner_id, action, {})
@@ -305,6 +367,7 @@ async def ui_message(
     bot_id: int,
     owner_id: int,
     retention_days: int,
+    food_discovery_remote_enabled: bool = False,
 ) -> MealReply | None:
     text = (message.text or "").strip()
     context: dict[str, Any] = dict(
@@ -313,6 +376,7 @@ async def ui_message(
         bot_id=bot_id,
         owner_id=owner_id,
         retention_days=retention_days,
+        food_discovery_remote_enabled=food_discovery_remote_enabled,
     )
     if text in {"/help", "/home", "/menu", "/setup", "/cancel"}:
         return await ui_action(
@@ -325,6 +389,31 @@ async def ui_message(
         from nutrition_bot.application.guided_goals import start_goal_setup
 
         return await start_goal_setup(connection, owner_id)
+    if text.casefold() == "/recipes":
+        from nutrition_bot.application.recipe_guide import start as recipe_start
+
+        return await recipe_start(connection, owner_id)
+    if text.casefold() == "/label":
+        from nutrition_bot.application.label_guide import start as label_start
+
+        return await label_start(connection, owner_id)
+    if text.casefold().startswith("/barcode "):
+        from nutrition_bot.application.food_discovery import start_barcode
+
+        previous = await _flow(connection, owner_id)
+        payload = (
+            previous["payload"]
+            if previous and previous["stage"].startswith(("food_", "recipe_"))
+            else {}
+        )
+        return await start_barcode(
+            connection,
+            text.split(maxsplit=1)[1],
+            payload,
+            action_key=action_key,
+            owner_id=owner_id,
+            chat_id=message.chat.id,
+        )
     row = await _flow(connection, owner_id)
     if row is None or message.reply_to_message is not None:
         return None
@@ -334,39 +423,52 @@ async def ui_message(
     if len(text) > 2000:
         return menu("Please send a shorter answer, or cancel this step.", (("Cancel", "cancel"),))
     stage, payload = row["stage"], row["payload"]
+    if stage == "food_barcode":
+        from nutrition_bot.application.food_discovery import start_barcode
+
+        return await start_barcode(
+            connection,
+            text,
+            payload,
+            action_key=action_key,
+            owner_id=owner_id,
+            chat_id=message.chat.id,
+        )
+    if stage.startswith("recipe_"):
+        from nutrition_bot.application.recipe_guide import guide_message as recipe_message
+
+        return await recipe_message(connection, row, text, message, **context)
+    if stage.startswith("label_"):
+        from nutrition_bot.application.label_guide import guide_message as label_message
+
+        if message.photo:
+            return menu(
+                "Type or paste the readable label values for this step. "
+                "Label-photo extraction is not enabled yet.",
+                (("Cancel", "cancel"),),
+            )
+        return await label_message(connection, row, text, message, **context)
+    if stage.startswith("food_discovery_"):
+        from nutrition_bot.application.food_discovery import discovery_message
+
+        return await discovery_message(connection, row, text, message, **context)
     if stage.startswith("goal_"):
         from nutrition_bot.application.guided_goals import goal_message
 
         return await goal_message(connection, row, text, owner_id=owner_id)
     if stage == "food_search":
-        rows = (
-            await connection.execute(
-                sa.select(food_versions.c.id, food_versions.c.name)
-                .where(
-                    food_versions.c.sealed.is_(True),
-                    sa.func.instr(sa.func.unicode_casefold(food_versions.c.name), text.casefold())
-                    > 0,
-                )
-                .order_by(food_versions.c.id.desc())
-                .limit(8)
-            )
-        ).all()
-        if not rows:
-            return menu(
-                "No reviewed food matches that name. Try another name. You can "
-                "import a reviewed food source before logging it.",
-                (("Cancel", "cancel"),),
-            )
-        rev = await begin(
+        from nutrition_bot.application.food_discovery import food_search_input, start_search
+
+        query, payload = food_search_input(text, payload, reference)
+
+        return await start_search(
             connection,
-            owner_id,
-            "food_search",
-            {"items": payload.get("items", []), "choices": [r.id for r in rows]},
-        )
-        return menu(
-            "Choose the exact reviewed food/version:",
-            tuple((f"{r.name} · #{r.id}"[:48], f"flow:{rev}:food={r.id}") for r in rows)
-            + (("Cancel", "cancel"),),
+            query,
+            payload,
+            action_key=action_key,
+            owner_id=owner_id,
+            chat_id=message.chat.id,
+            remote_enabled=food_discovery_remote_enabled,
         )
     if stage == "amount":
         match = re.fullmatch(

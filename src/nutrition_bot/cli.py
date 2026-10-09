@@ -31,9 +31,12 @@ def migrate(settings: StorageSettings) -> None:
 
 
 async def run(settings: BotSettings) -> None:
+    import httpx
     from aiogram import Bot
 
     from nutrition_bot.adapters.database.store import Store
+    from nutrition_bot.adapters.nutrition.usda import USDAProvider
+    from nutrition_bot.application.food_catalog import FoodCatalog
     from nutrition_bot.application.service import Service
     from nutrition_bot.runtime.worker import run_worker
     from nutrition_bot.telegram.gateway import TelegramGateway
@@ -74,11 +77,30 @@ async def run(settings: BotSettings) -> None:
             )
         try:
             await ai_service.recover_abandoned()
-            async with Bot(settings.telegram_bot_token.get_secret_value()) as bot:
+            async with (
+                Bot(settings.telegram_bot_token.get_secret_value()) as bot,
+                httpx.AsyncClient() as source_client,
+            ):
                 gateway = TelegramGateway(bot)
                 if settings.miniapp_enabled and not settings.miniapp_url:
                     raise ValueError("Configure the HTTPS Mini App URL")
-                service = Service(store, settings, ai_service)
+                provider = (
+                    USDAProvider(
+                        source_client, settings.usda_api_key, settings.usda_timeout_seconds
+                    )
+                    if settings.usda_api_key
+                    else None
+                )
+                providers = {}
+                if settings.openfoodfacts_enabled:
+                    from nutrition_bot.adapters.nutrition.openfoodfacts import OpenFoodFactsProvider
+
+                    providers["openfoodfacts"] = OpenFoodFactsProvider(
+                        source_client, settings.usda_timeout_seconds
+                    )
+                service = Service(
+                    store, settings, ai_service, FoodCatalog(store, provider, providers=providers)
+                )
                 runner = None
                 try:
                     if settings.miniapp_enabled:

@@ -2,6 +2,35 @@
 
 T04.3 implements versioned recipes using reviewed ingredient data and deterministic portion calculations. It requires no AI or additional service. This increment is deployed with container verification; full real-device Telegram acceptance remains pending.
 
+## Guided creation and everyday portions
+
+Open **Recipes** from the home menu or send `/recipes`. Choose **Create recipe**,
+give the batch a name, then search and choose each ingredient's exact food and
+preparation. Food discovery can add a reviewed USDA record without leaving this
+recipe. Enter the edible ingredient weight for the **whole batch**, add any other
+ingredients, and choose **Set batch size**. Define either the actual edible cooked
+batch weight or the number of equal servings. No food or recipe ID syntax is needed.
+
+Review the ingredient list and batch size, then tap **Save recipe**. This saves a
+formulation and records no food consumption. **Log portion** asks what you ate;
+send measured grams for a yield batch or a serving amount for a serving batch.
+The prompt accepts a bare number in its displayed unit, or an explicit unit, and
+supports `yesterday` or a past date. An explicit `about` amount stays estimated.
+Any estimated ingredient, batch size or consumed portion opens a fresh Telegram
+approval draft before entering totals.
+
+**New batch** starts from the selected current ingredients so you can change the
+ingredient list and enter that batch's actual yield. **Remove last ingredient**
+and **Add ingredient** let you correct the definition before saving. Saved changes
+append a recipe version. Earlier meals and favorites retain their original batch.
+Opening an earlier batch through Details and choosing its portion button logs that
+selected historical version, which is useful for leftovers. Grams and servings
+cannot be converted without a corresponding batch definition.
+
+Guided steps survive a worker restart and expire after 30 minutes of inactivity.
+Old step buttons cannot save a changed definition. **Cancel** abandons the current
+guide without consuming food. Existing explicit commands below remain available.
+
 ## Define a batch
 
 Choose exact foods and preparation with `/foods`, then save ingredients and one denominator:

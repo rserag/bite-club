@@ -105,7 +105,24 @@
               type="search"
             /><button class="icon-button" aria-label="Search">↗</button>
           </form>
+          <div class="food-tools">
+            <label>Preparation<select id="food-preparation">
+              <option value="">Any preparation</option>
+              <option value="raw">Raw</option>
+              <option value="cooked">Cooked</option>
+              <option value="as_sold">Packaged / as sold</option>
+              <option value="as_prepared">As prepared</option>
+            </select></label>
+            <button id="find-source" class="secondary" type="button">Find in USDA</button>
+          </div>
           <div id="food-results" class="list"></div>
+          <div id="source-results" class="list" aria-live="polite"></div>
+          <details class="food-alternatives"><summary>Add a packaged food or label</summary>
+            <form id="barcode-form" class="search"><label class="sr-only" for="food-barcode">Product barcode</label><input id="food-barcode" type="text" inputmode="numeric" pattern="[0-9]{8}|[0-9]{12,14}" maxlength="14" placeholder="Type barcode digits" required /><button type="submit" class="secondary">Look up barcode</button></form>
+            <p class="subtle">A barcode identifies a product. Review its source, then enter the amount you ate.</p>
+            <p class="subtle" id="label-help">Enter a nutrition label in your private bot chat. Review your measured foods and date first; the guide continues that meal without logging it yet.</p>
+            <button id="label-chat" type="button" class="secondary">Continue with a label in chat</button>
+          </details>
         </section>
         <section id="history" class="view" hidden>
           <div class="eyebrow">EVERY CHANGE HAS A HISTORY</div>
@@ -156,6 +173,7 @@
             </select></label
           ><label>Date<input id="meal-day" type="date" required /></label>
         </div>
+        <p id="label-handoff-help" class="subtle" hidden>Review these measured portions and the meal date. The label guide keeps them while you enter the missing food's nutrition label and amount. Nothing is logged until you review and save the complete meal in chat.</p>
         <div id="portion-rows"></div>
         <button id="add-food" type="button" class="secondary wide">
           ＋ Choose another food</button
@@ -167,6 +185,29 @@
             ></span
           ></label
         ><button id="save-meal" class="primary wide">Save measured meal</button>
+      </form>
+    </dialog>
+    <dialog id="source-dialog">
+      <form id="source-form">
+        <div class="dialog-header"><h2>Review this food source</h2><button id="close-source" type="button" class="icon-button" aria-label="Close source review">×</button></div>
+        <div id="source-body"></div>
+        <label>Preparation<select id="source-preparation" required>
+          <option value="">Choose the preparation</option>
+          <option value="raw">Raw</option><option value="cooked">Cooked</option>
+          <option value="as_sold">Packaged / as sold</option><option value="as_prepared">As prepared</option>
+        </select></label>
+        <label class="confirm-line"><input id="source-reviewed" type="checkbox" required /><span>I reviewed the food, preparation and source.<small>Save the reviewed food or use it in a measured meal. Missing nutrients remain unknown.</small></span></label>
+        <button class="primary wide" type="submit">Use this source in my meal</button>
+        <button id="save-source" class="secondary wide" type="button">Save food only</button>
+      </form>
+    </dialog>
+    <dialog id="recipe-dialog">
+      <form id="recipe-form">
+        <div class="dialog-header"><h2>Edit recipe portion</h2><button id="close-recipe" type="button" class="icon-button" aria-label="Close recipe portion">×</button></div>
+        <div id="recipe-summary"></div>
+        <label id="recipe-amount-label">Portion<input id="recipe-amount" type="number" min="0.001" step="0.001" inputmode="decimal" required /></label>
+        <label class="confirm-line"><input id="recipe-estimated" type="checkbox" /><span>This portion is approximate.<small>Estimates in the portion or saved recipe need fresh approval in chat.</small></span></label>
+        <button class="primary wide" type="submit">Save / review portion</button>
       </form>
     </dialog>
     <dialog id="detail-dialog">

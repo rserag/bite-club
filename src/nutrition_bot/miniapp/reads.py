@@ -13,11 +13,15 @@ from nutrition_bot.adapters.database.checkins import food_day_status
 from nutrition_bot.adapters.database.daily import daily_totals
 from nutrition_bot.adapters.database.foods import get_food_version
 from nutrition_bot.adapters.database.goals import current_plan
-from nutrition_bot.adapters.database.meals import get_meal
-from nutrition_bot.adapters.database.schema import food_versions, meal_revisions, meals
+from nutrition_bot.adapters.database.meals import MealItemSnapshot, MealSnapshot, get_meal
+from nutrition_bot.adapters.database.recipes import get_recipe_version
+from nutrition_bot.adapters.database.schema import food_versions, foods, meal_revisions, meals
 from nutrition_bot.adapters.database.schema_favorites import favorite_versions, favorites
 from nutrition_bot.adapters.database.schema_weights import body_weight_revisions, body_weights
-from nutrition_bot.domain.food import milligrams_to_grams
+from nutrition_bot.application.food_catalog import local_food_search
+from nutrition_bot.application.recipe_display import portion_mass
+from nutrition_bot.domain.food import Preparation, milligrams_to_grams
+from nutrition_bot.domain.recipe_portions import ingredient_grams
 
 
 def amount(scaled: int | None) -> str | None:
@@ -133,7 +137,9 @@ async def dashboard(connection: AsyncConnection, day: date, timezone: str) -> di
     }
 
 
-async def food_choices(connection: AsyncConnection, query: str) -> list[dict[str, Any]]:
+async def food_choices(
+    connection: AsyncConnection, query: str, *, preparation: Preparation | None = None
+) -> list[dict[str, Any]]:
     latest = (
         sa.select(food_versions.c.food_id, sa.func.max(food_versions.c.id).label("version_id"))
         .where(food_versions.c.sealed.is_(True))
@@ -143,17 +149,18 @@ async def food_choices(connection: AsyncConnection, query: str) -> list[dict[str
     statement = (
         sa.select(food_versions.c.id)
         .join(latest, latest.c.version_id == food_versions.c.id)
+        .join(foods, foods.c.id == food_versions.c.food_id)
         .order_by(food_versions.c.name, food_versions.c.id)
         .limit(30)
     )
+    if preparation:
+        statement = statement.where(foods.c.preparation == preparation)
+    ids: Sequence[int]
     if query:
-        # contains(autoescape=True) treats user's % and _ as literal search text.
-        statement = statement.where(
-            sa.func.unicode_casefold(food_versions.c.name).contains(
-                query.casefold(), autoescape=True
-            )
-        )
-    ids: Sequence[int] = (await connection.execute(statement)).scalars().all()
+        matches = await local_food_search(connection, query, preparation=preparation, limit=30)
+        ids = [item.version_id for item in matches]
+    else:
+        ids = (await connection.execute(statement)).scalars().all()
     result = []
     for version_id in ids:
         food = await get_food_version(connection, version_id)
@@ -186,6 +193,7 @@ async def meal_history(connection: AsyncConnection, before: int | None) -> list[
     result = []
     for meal_id in ids:
         meal = await get_meal(connection, meal_id)
+        recipes, recipe_editable = await recipe_choices(connection, meal)
         result.append(
             {
                 "id": meal.id,
@@ -193,15 +201,60 @@ async def meal_history(connection: AsyncConnection, before: int | None) -> list[
                 "label": meal.label,
                 "date": meal.local_date.isoformat(),
                 "deleted": meal.deleted,
-                "items": [
-                    {
-                        "name": item.food_name,
-                        "version_id": item.food_version_id,
-                        "grams": str(milligrams_to_grams(item.edible_milligrams)),
-                        "estimated": item.quantity_method == "approved_estimate",
-                    }
-                    for item in meal.items
-                ],
+                "items": [meal_item(item) for item in meal.items],
+                "recipes": recipes,
+                "recipe_editable": recipe_editable,
             }
         )
     return result
+
+
+def meal_item(item: MealItemSnapshot) -> dict[str, Any]:
+    share = item.recipe_share
+    return {
+        "name": item.food_name,
+        "version_id": item.food_version_id,
+        "preparation": item.preparation,
+        "grams": str(
+            ingredient_grams(share, item.edible_milligrams)
+            if share
+            else milligrams_to_grams(item.edible_milligrams)
+        ),
+        "quantity_text": portion_mass(item.edible_milligrams, share),
+        "recipe_ingredient": share is not None,
+        "estimated": item.quantity_method == "approved_estimate",
+    }
+
+
+async def recipe_choices(
+    connection: AsyncConnection, meal: MealSnapshot
+) -> tuple[list[dict[str, Any]], bool]:
+    groups: dict[str, dict[str, Any]] = {}
+    shares = [item.recipe_share for item in meal.items]
+    for share in shares:
+        if share is None:
+            continue
+        key = share.model_dump_json(exclude={"ingredient_index"})
+        if key in groups:
+            continue
+        recipe = await get_recipe_version(connection, share.version_id)
+        groups[key] = {
+            "reference": f"R{share.recipe_id}v{share.version_number}",
+            "version_id": share.version_id,
+            "name": share.name,
+            "unit": share.unit,
+            "amount": str(Decimal(share.portion_units) / 1000),
+            "maximum": str(Decimal(share.total_units) / 1000),
+            "fraction": f"{share.fraction.numerator}/{share.fraction.denominator}",
+            "estimated": bool(share.portion_estimate_basis),
+            "estimated_batch": bool(recipe.definition.estimate_basis)
+            or any(item.estimate_basis for item in recipe.definition.items),
+        }
+    first = shares[0] if shares else None
+    editable = False
+    if first is not None and len(groups) == 1 and all(shares):
+        recipe = await get_recipe_version(connection, first.version_id)
+        editable = len(meal.items) == len(recipe.definition.items) and [
+            share.ingredient_index for share in shares if share is not None
+        ] == list(range(len(shares)))
+    return list(groups.values()), editable
