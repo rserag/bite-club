@@ -5,13 +5,57 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color: #29332b;
-  background: #f6f5ee;
+  color: var(--text);
+  background: var(--background);
+  color-scheme: light;
   font-synthesis: none;
+  --text: #29332b;
+  --background: #f6f5ee;
   --green: #35533f;
+  --primary-background: #35533f;
   --muted: #74796e;
   --border: #e2e5da;
   --warm: #edf0e2;
+  --surface: #fffdf7;
+  --chart-surface: #fdfcf7;
+  --secondary: #ebede3;
+  --nav-background: #fdfcf6f5;
+  --nav-text: #868a7c;
+  --input-border: #daddce;
+  --error: #9c462b;
+  --destructive: #a1644c;
+  --chart-bar: #a5b498;
+  --chart-stripe: #c4ccba;
+  --chart-unknown: #dddccf;
+  --chart-value: #65715f;
+  --weight-marker: #b5c4a6;
+  --focus: #b99045;
+  --backdrop: #25342980;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --text: #edf1e8;
+  --background: #171d19;
+  --green: #b7d3b4;
+  --primary-background: #355b43;
+  --muted: #a8b2a3;
+  --border: #394339;
+  --warm: #283229;
+  --surface: #202820;
+  --chart-surface: #202820;
+  --secondary: #2c382d;
+  --nav-background: #202820f5;
+  --nav-text: #a8b2a3;
+  --input-border: #465246;
+  --error: #ffaf91;
+  --destructive: #f0ad94;
+  --chart-bar: #90b38c;
+  --chart-stripe: #627d5e;
+  --chart-unknown: #707b69;
+  --chart-value: #bacbb3;
+  --weight-marker: #94b789;
+  --focus: #d7b471;
+  --backdrop: #080c0ab3;
 }
 * {
   box-sizing: border-box;
@@ -38,7 +82,7 @@ input:focus-visible,
 select:focus-visible,
 a:focus-visible,
 summary:focus-visible {
-  outline: 3px solid #b99045;
+  outline: 3px solid var(--focus);
   outline-offset: 3px;
 }
 button {
@@ -78,7 +122,7 @@ a {
 .brand-mark {
   display: grid;
   place-items: center;
-  background: var(--green);
+  background: var(--primary-background);
   color: #fff;
   font-family: Georgia, serif;
   font-size: 34px;
@@ -110,7 +154,7 @@ a {
   padding: 0 0 16px;
 }
 .notice.error {
-  color: #9c462b;
+  color: var(--error);
 }
 .eyebrow {
   font-size: 10px;
@@ -148,14 +192,14 @@ h2 {
 .date-control input {
   background: transparent;
   border: 0;
-  color: #3e4b40;
+  color: var(--text);
   min-height: 30px;
   width: 133px;
   font-size: 12px;
   text-align: right;
 }
 .energy-card {
-  background: var(--green);
+  background: var(--primary-background);
   color: #fff;
   padding: 23px 21px;
   border-radius: 24px;
@@ -264,7 +308,7 @@ h2 {
   gap: 9px;
 }
 .primary {
-  background: var(--green);
+  background: var(--primary-background);
   color: #fff;
 }
 .primary span {
@@ -277,7 +321,7 @@ h2 {
   font-size: 18px;
 }
 .secondary {
-  background: #ebede3;
+  background: var(--secondary);
   color: var(--green);
   border: 1px solid var(--border);
 }
@@ -303,7 +347,7 @@ h2 {
   min-width: 125px;
   text-align: left;
   border: 1px solid var(--border);
-  background: #fffdf6;
+  background: var(--surface);
   border-radius: 15px;
   padding: 13px 14px;
   color: var(--green);
@@ -325,7 +369,7 @@ h2 {
 }
 .chart-card {
   border: 1px solid var(--border);
-  background: #fdfcf7;
+  background: var(--chart-surface);
   border-radius: 18px;
   padding: 19px 16px 13px;
 }
@@ -351,7 +395,7 @@ h2 {
   gap: 7px;
 }
 .chart-bar {
-  background: #a5b498;
+  background: var(--chart-bar);
   border-radius: 5px 5px 2px 2px;
   min-width: 16px;
   width: 80%;
@@ -359,15 +403,15 @@ h2 {
 .chart-bar.partial {
   background: repeating-linear-gradient(
     135deg,
-    #a5b498,
-    #a5b498 4px,
-    #c4ccba 4px,
-    #c4ccba 7px
+    var(--chart-bar),
+    var(--chart-bar) 4px,
+    var(--chart-stripe) 4px,
+    var(--chart-stripe) 7px
   );
 }
 .chart-bar.unknown {
   height: 3px;
-  background: #dddccf;
+  background: var(--chart-unknown);
 }
 .chart-column small {
   font-size: 9px;
@@ -375,7 +419,7 @@ h2 {
 }
 .chart-column .chart-value {
   font-size: 8px;
-  color: #65715f;
+  color: var(--chart-value);
 }
 .weight-chart {
   display: flex;
@@ -384,7 +428,7 @@ h2 {
 }
 .weight-dot {
   padding: 10px 0;
-  border-bottom: 2px solid #b5c4a6;
+  border-bottom: 2px solid var(--weight-marker);
   min-width: 50px;
   text-align: center;
 }
@@ -431,13 +475,13 @@ h2 {
   left: 0;
   right: 0;
   padding: 12px 16px calc(10px + env(safe-area-inset-bottom));
-  background: #fdfcf6f5;
+  background: var(--nav-background);
   border-top: 1px solid var(--border);
   backdrop-filter: blur(10px);
 }
 .bottom-nav button {
   background: transparent;
-  color: #868a7c;
+  color: var(--nav-text);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -463,7 +507,7 @@ h2 {
   display: flex;
   gap: 6px;
   border: 1px solid var(--border);
-  background: #fffdf7;
+  background: var(--surface);
   border-radius: 15px;
   padding: 3px 5px 3px 14px;
   margin-bottom: 20px;
@@ -480,12 +524,12 @@ h2 {
   gap: 10px;
 }
 .list-card {
-  background: #fffdf7;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 17px;
   padding: 17px;
   text-align: left;
-  color: #29332b;
+  color: var(--text);
   width: 100%;
 }
 .list-card strong {
@@ -519,12 +563,12 @@ dialog {
   max-width: 490px;
   max-height: 88vh;
   overflow: auto;
-  background: #f6f5ee;
+  background: var(--background);
   padding: 24px;
-  color: #29332b;
+  color: var(--text);
 }
 dialog::backdrop {
-  background: #25342980;
+  background: var(--backdrop);
   backdrop-filter: blur(3px);
 }
 .dialog-header {
@@ -551,11 +595,11 @@ label {
 }
 input,
 select {
-  border: 1px solid #daddce;
+  border: 1px solid var(--input-border);
   border-radius: 10px;
-  background: #fffdf7;
+  background: var(--surface);
   padding: 10px 9px;
-  color: #29332b;
+  color: var(--text);
   min-width: 0;
   font-size: 13px;
 }
@@ -583,7 +627,7 @@ select {
 }
 .portion-row button {
   background: transparent;
-  color: #a1644c;
+  color: var(--destructive);
   font-size: 20px;
   min-width: 34px;
 }
@@ -594,7 +638,7 @@ select {
   align-items: flex-start;
   line-height: 1.6;
   margin: 23px 0;
-  color: #43503e;
+  color: var(--text);
 }
 .confirm-line input {
   min-height: 20px;
