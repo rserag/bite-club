@@ -1,16 +1,22 @@
-# USDA lookup and offline food selection
+# Food discovery, source review and offline selection
 
-This increment connects the reviewed catalog to USDA FoodData Central through a replaceable `FoodProvider` interface. It supplies local operator commands and source-selection services. The [Telegram meal diary](meal-diary.md) can now log and correct measured meals from selected local records; remote USDA search/selection still uses these maintenance commands.
+Telegram and the Mini App share preparation-aware search over current saved food versions. Explicit aliases can retain a reviewed historic version. Search never substitutes cooked for raw or selects an ambiguous food automatically.
+
+In Telegram, choose **Log food**, search by name, then use **Search all foods** for USDA results even when a saved match already exists. Select the full source description and review its preparation, values, missing nutrients and source. Enter measured grams and use the current confirmation to save composition and consumption together. The pending meal date and other ingredients survive discovery, label entry and provider failures. Rough portions still open a fresh exact-revision approval draft.
+
+The Mini App offers **Find in USDA** and optional **Barcode** lookup beside saved-food search. Add the current reviewed source preview to the meal, enter measured grams, and save the mixed source/saved meal once. **Continue with a label in chat** reviews and hands off the unfinished measured meal through the durable inbox, retaining its food versions, source hashes, grams, date and label. It opens chat only after the handoff is accepted. Recipe history shows consumed ingredient equivalents and edits the actual cooked portion or serving share while preserving its recipe version.
+
+Accepted sources remain available offline. **Enter food label** provides a no-network fallback; see [packaged foods](packaged-foods.md). Operator CLI commands below remain available for bulk maintenance.
 
 ## Configuration and access
 
-Set `USDA_API_KEY` only in a private environment file. An empty key disables remote lookup and leaves saved foods and reviewed manual imports available. `USDA_TIMEOUT_SECONDS` defaults to 10 seconds and is bounded to 1–30 seconds. Obtain a key through the [USDA API guide](https://fdc.nal.usda.gov/api-guide/); do not paste it in repository files or issue descriptions.
+Set `USDA_API_KEY` only in a private environment file. An empty key disables remote lookup and leaves saved foods and reviewed manual imports available. `USDA_TIMEOUT_SECONDS` defaults to 10 seconds and is bounded to 1–30 seconds. Obtain a free dedicated key through the [USDA API guide](https://fdc.nal.usda.gov/api-guide/); public `DEMO_KEY` access is limited to 30 requests/hour and 50/day. A dedicated key is recommended for regular use. Do not paste keys in repository files or issue descriptions.
 
 The adapter uses the fixed USDA HTTPS endpoint, sends its key in a header using the [federal API gateway mechanism](https://api.data.gov/docs/developer-manual/), rejects redirects, and does not log request/response bodies, keys, queries, or raw exception text. Requests have both per-request and total-operation deadlines, a response-size limit, and no automatic retries. A rate-limit response carries a bounded retry hint when available. No AI provider is involved.
 
 ## Find, review, select
 
-These are local maintenance commands; as with manual food import, stop the worker before using commands that take the database file lock. The application service used by future Telegram handlers uses normal SQLite transactions and does network work outside the write transaction.
+These are local maintenance commands; as with manual food import, stop the worker before using commands that take the database file lock. The runtime uses durable owner/chat/revision-bound jobs and performs network work outside write transactions. Cancellation, restart recovery and stale results cannot approve or save a meal.
 
 ```sh
 uv run nutrition-bot migrate
@@ -55,7 +61,7 @@ Migration `0003_food_sources` adds nullable provenance fields to existing versio
 
 ## Source interpretation
 
-Only Foundation, SR Legacy and Survey/FNDDS generic-food details are supported in this increment. Branded/barcode interpretation belongs to T09; unsupported food types offer manual entry. Search responses supply candidate identities only. Nutrient values come from full food details.
+Only Foundation, SR Legacy and Survey/FNDDS generic-food details are supported in this increment. USDA branded details are not supported; typed barcodes use the separately optional Open Food Facts adapter described below. Unsupported food types offer manual label entry. Search responses supply candidate identities only. Nutrient values come from full food details.
 
 The mapping explicitly uses USDA nutrient IDs for the 14 registered nutrients. It does not use the separate legacy nutrient numbers as IDs. The database retains unknowns for missing or unusable values. Unsupported nutrients are omitted with a warning until a reviewed mapping is added.
 
@@ -68,10 +74,16 @@ Below-quantification-limit values are not treated as known zeros: the adapter re
 FoodData Central data are CC0, with USDA attribution retained in source records. This does not make food matching automatic or remove natural variation in food composition. [USDA licensing and API access](https://fdc.nal.usda.gov/api-guide/)
 
 
+## Optional barcode provider
+
+Set `OPENFOODFACTS_ENABLED=true` to enable typed barcode lookup. No provider key is required. The adapter validates the GS1 check digit, normalizes the code and sends only those digits to the fixed HTTPS product endpoint with an identifying User-Agent. It uses API v3.6, bounded response size/deadline, no redirects, and a minimum 4.1-second interval between product reads. [API access and limits](https://openfoodfacts.github.io/openfoodfacts-server/api/)
+
+Review the matched brand/variant and printed label; community data can be wrong. The adapter selects one original as-sold 100 g packaging input set, or one manufacturer set when packaging is absent. Duplicate, serving-only, prepared or volume-based sets require manual label review. It imports original `value_string` and units, never the computed aggregate, inferred sodium/energy or estimates. Ambiguous carbohydrate definitions remain unknown. [Nutrition schema](https://github.com/openfoodfacts/openfoodfacts-server/blob/main/docs/api/ref/schemas/product_nutrition_v3.yaml), [original and computed values](https://github.com/openfoodfacts/openfoodfacts-server/blob/main/docs/api/ref/schemas/nutrient_values_v3_base.yaml)
+
+Source metadata retains Open Food Facts attribution, ODbL database/DbCL contents licensing and the canonical barcode URL. No product images or catalog are downloaded into the public repository. Accepted snapshots remain immutable and reusable offline. Unmatched barcodes, unavailable providers and unsupported label bases offer typed-label entry; a barcode never establishes the amount eaten.
+
 ## Verification
 
-The combined local suite passes **189 tests**, with Ruff checks/format and strict mypy clean. Tests use synthetic source data and mocked transport, covering the 14 nutrient mappings, energy priority, below-LOQ/missing/duplicate values, preparation and portion interpretation, bounded HTTP failures, credential-safe errors, cache lifecycle, immutable selected versions and full previous-schema migration preservation. A concurrent local write succeeds while a provider fetch is waiting.
+Offline synthetic tests cover shared current-version search, cooked/raw distinctions, bounded provider failures, original units and unknowns, immutable cache acceptance, stale hashes/buttons, cancellation/restart, atomic mixed-meal rollback and fresh estimate approval. Provider requests waiting on a response do not block local `/today` processing. No test sends live Telegram messages or paid model requests.
 
-A live smoke check used USDA's public demo key and a generic public food query: search returned 10 candidates, and the selected FNDDS detail parsed 14 mapped nutrients and three portions on a 100 g basis. No owner credentials, personal queries or stored datasets were used; this is a small compatibility check, not exhaustive validation of every USDA record.
-
-Source/wheel builds and archive privacy inventory pass. An installed wheel outside the checkout passed migrate → fetch synthetic source → select exact preview → reopen database → offline lookup/show. The implementation has local and Linux-container coverage. Remote selection remains an operator workflow; full real-device acceptance of newer diary flows is tracked separately.
+A separate compatibility check read a public product from the provider's documented staging service with its public test access. The current v3.6 schema parsed original as-sold 100 g values without storing a product or personal data. This checks compatibility, not the quality of all community records.

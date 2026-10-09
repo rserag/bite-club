@@ -30,14 +30,15 @@ def tap(receipt, label, uid):
 async def test_start_help_topics_are_short_and_home_is_clickable(service, store):
     start = await process(service, store, message(1, "/start"))
     assert len(start["payload"]["text"]) < 200
-    assert len(start["payload"]["buttons"]) == 9
+    assert "Recipes" in [button["text"] for button in start["payload"]["buttons"]]
+    assert len(start["payload"]["buttons"]) <= 12
     help_ = await process(service, store, message(2, "/help"))
     assert len(help_["payload"]["text"]) < 250
     assert "Targets & setup" in [b["text"] for b in help_["payload"]["buttons"]]
     gateway = FakeGateway()
     await process(service, store, message(3, "/home"), sent=False)
     assert await send_one(service, gateway)
-    assert len(gateway.keyboards[0]) == 9
+    assert len(gateway.keyboards[0]) == 10
 
 
 async def guided(service, store, catalog, *, rough=False):
@@ -53,7 +54,7 @@ async def guided(service, store, catalog, *, rough=False):
 async def test_guided_food_portion_review_uses_existing_ledger(service, store, catalog, rough):
     review = await guided(service, store, catalog, rough=rough)
     assert await ledger_counts(store) == (0, 0)
-    update = tap(review, "Save / review draft", 6)
+    update = tap(review, "Review estimate" if rough else "Confirm & log", 6)
     result = await process(service, store, update)
     assert result is not None
     if rough:
@@ -75,7 +76,7 @@ async def test_old_save_button_cannot_save_reopened_guided_flow(service, store, 
     choices = await process(service, store, message(9, "chicken"))
     await process(service, store, tap(choices, choices["payload"]["buttons"][0]["text"], 10))
     await process(service, store, message(11, "200 g"))
-    stale = await process(service, store, tap(review, "Save / review draft", 12))
+    stale = await process(service, store, tap(review, "Confirm & log", 12))
     assert "changed or expired" in stale["payload"]["text"]
     assert await ledger_counts(store) == (0, 0)
 
@@ -87,7 +88,7 @@ async def test_guided_flow_survives_new_service_and_expires_without_saving(
     await process(service, store, tap(home, "Log food", 2))
     restarted = Service(store, settings)
     choices = await process(restarted, store, message(3, "rice"))
-    assert "Choose the exact" in choices["payload"]["text"]
+    assert "Choose the food" in choices["payload"]["text"]
     async with store.write() as connection:
         await connection.execute(sa.update(ui_flows).values(updated_at=1))
     result = await process(

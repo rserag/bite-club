@@ -6,6 +6,35 @@ seven-day recorded-energy bars and recent measured weights. It reads current
 ledger revisions and shows missing nutrient data as unknown. Partial nutrient
 sums remain labeled; no missing-day intake or weight is invented.
 
+Food search uses the same current reviewed versions, word matching, aliases and
+preparation constraints as chat. **Find in USDA** searches
+additional USDA records. A typed barcode opens an Open Food Facts product preview.
+Review the full description, preparation, source basis and reported nutrients;
+unlisted or missing values remain unknown. **Save food only** adds composition
+without logging consumption. **Use this source in my meal** retains the current
+form's other foods and asks for measured grams. Saving that mixed meal accepts
+the exact displayed source revisions and logs the meal together through the
+durable inbox. Changed or expired source previews reject the entire request.
+Provider calls run outside database write transactions, and source lookup has a
+separate bounded request rate.
+
+For a nutrition label, **Continue with a label in chat** reviews the known foods,
+measured grams, date and meal label, then sends that context through the durable
+inbox. A successful receipt opens the private chat's label guide with those same
+versions and source revisions. Nothing is logged by the handoff; review and save
+the complete meal in chat after entering the label and its portion. Leave room
+for the label food in the ten-entry meal. A rejected handoff retains its form,
+including the original source hash; expired previews require another explicit
+source review.
+
+Recipe history shows cooked portions or equal servings with calculated ingredient
+equivalents. **Edit recipe portion** changes the original batch's portion in its
+defined unit, preserving its pinned recipe and ingredient versions. Estimated
+changes still require fresh approval in chat. The ordinary measured-food editor
+cannot replace recipe shares implicitly. **Replace recipe with measured foods**
+requires explicit conversion intent and a new selection of all replacement foods
+and measured amounts. Mixed recipe groups can be edited from their chat receipt.
+
 The dashboard follows Telegram's light or dark mode, including changes while it
 is open. Cards, charts, navigation and meal dialogs share the selected palette;
 native form controls and supported Telegram header/background bars match it too.
@@ -35,8 +64,16 @@ in the ordinary authorized durable inbox. It does not advance the Telegram poll
 cursor. The regular worker applies the command and sends the same durable receipt
 to the private chat. The browser polls that receipt and displays it. No web code
 writes a parallel meal ledger. A client UUID retries the same command idempotently;
-reusing it for changed input is rejected. Only an opaque pending request identifier
+reusing it for changed input is rejected. An opaque pending request identifier
 is stored in session storage so a browser refresh can recover a queued receipt.
+Label handoffs also temporarily store their request identifier, creation time,
+date, meal label and up to nine pinned food version IDs or provider/source IDs,
+hashes, preparation and measured grams. They store no food names, nutrient data or
+credentials. The bounded draft expires after six hours, restores only after an
+authenticated diary read, and clears on an accepted handoff or an explicit cancel.
+Queued handoffs retain their original identifier across refreshes. Storage failure
+keeps the form open and prevents the handoff. Other unsaved form contents remain
+local to the open Mini App.
 If delivery is slow or a connection drops, **Check receipt** and **Refresh** resume
 that same request without creating another meal. An expired launch cannot discard
 an already accepted pending request; reopen the app to authenticate again and
@@ -55,8 +92,9 @@ on the same receipt cannot duplicate a meal or its estimate draft. To log the ne
 occurrence, use Repeat on the newest saved receipt or reopen the source meal.
 Every repeated estimate still needs its own reviewed draft approval.
 
-Offline verification is in `tests/test_miniapp_auth.py` and
-`tests/test_miniapp_server.py`; it uses only synthetic launch signatures and data.
+Offline verification is in `tests/test_miniapp_auth.py`, `tests/test_miniapp_server.py`,
+`tests/test_miniapp_recipes.py` and `tests/test_miniapp_food_sources.py`; it uses only
+synthetic launch signatures and data.
 Opening this application in a normal browser without Telegram displays a launch
 instruction and cannot reveal the diary. Production activation and a real Telegram
 webview check require the HTTPS URL and reverse-proxy configuration.

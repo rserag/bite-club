@@ -18,7 +18,6 @@ from nutrition_bot.adapters.ai.openrouter import (
 )
 from nutrition_bot.adapters.database.drafts import create_draft
 from nutrition_bot.adapters.database.foods import get_food_version
-from nutrition_bot.adapters.database.schema import food_versions, foods
 from nutrition_bot.adapters.database.schema_ai import (
     ai_attempts,
     ai_disabled_routes,
@@ -34,6 +33,7 @@ from nutrition_bot.application.ai_budget import (
     settle_attempt,
 )
 from nutrition_bot.application.draft_conversation import draft_receipt
+from nutrition_bot.application.food_retrieval import ai_food_context
 from nutrition_bot.application.meal_conversation import MealReply, _date_timestamp
 from nutrition_bot.domain.ai import AiCallMetrics, AiCatalogItem, AiOutcome, AiRole, AiUnavailable
 from nutrition_bot.domain.ai_policy import AiEndpointManifest
@@ -99,23 +99,11 @@ class AiService:
         if self.adapter is not None:
             await self.adapter.close()
 
-    async def _catalog(self) -> tuple[AiCatalogItem, ...]:
+    async def _catalog(self, text: str = "") -> tuple[AiCatalogItem, ...]:
         if self.evaluation_catalog is not None:
             return self.evaluation_catalog
         async with self.store.engine.connect() as connection:
-            rows = (
-                await connection.execute(
-                    sa.select(food_versions.c.id, food_versions.c.name, foods.c.preparation)
-                    .join(foods, food_versions.c.food_id == foods.c.id)
-                    .where(food_versions.c.sealed.is_(True), foods.c.preparation != "unspecified")
-                    .order_by(food_versions.c.id.desc())
-                    .limit(40)
-                )
-            ).all()
-        return tuple(
-            AiCatalogItem(food_version_id=row.id, name=row.name[:120], preparation=row.preparation)
-            for row in rows
-        )
+            return await ai_food_context(connection, text)
 
     async def interpret(
         self,
@@ -341,7 +329,7 @@ class AiService:
             from datetime import UTC
 
             route = self.manifest.route(role, datetime.now(UTC).date())
-            catalog = await self._catalog()
+            catalog = await self._catalog(text)
             if not catalog:
                 return await self._finish(request_key, role, "clarify")
             try:
@@ -483,7 +471,7 @@ class AiService:
                         request_key=request_key, role=role, state="running", created_at=time.time()
                     )
                 )
-            catalog = await self._catalog()
+            catalog = await self._catalog(text)
             if not catalog:
                 return await self._finish(request_key, role, "unavailable")
             try:

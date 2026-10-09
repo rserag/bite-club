@@ -1,6 +1,6 @@
 import sqlalchemy as sa
 
-SCHEMA_REVISION = "0025_ai_metrics"
+SCHEMA_REVISION = "0026_food_discovery"
 metadata = sa.MetaData()
 
 profile = sa.Table(

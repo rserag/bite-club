@@ -54,7 +54,20 @@ class StorageSettings(BaseSettings):
         return make_url(self.database_url).set(database=str(self.database_path)).render_as_string()
 
 
-class BotSettings(StorageSettings):
+class NutritionSourceSettings(StorageSettings):
+    usda_api_key: SecretStr | None = None
+    usda_timeout_seconds: float = Field(default=10, ge=1, le=30, allow_inf_nan=False)
+    openfoodfacts_enabled: bool = False
+
+    @field_validator("usda_api_key", mode="before")
+    @classmethod
+    def empty_key_is_disabled(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+class BotSettings(NutritionSourceSettings):
     telegram_bot_token: SecretStr
     allowed_telegram_user_id: int = Field(gt=0)
     allowed_telegram_chat_id: int = Field(gt=0)
@@ -106,15 +119,3 @@ class BotSettings(StorageSettings):
     @property
     def bot_id(self) -> int:
         return int(self.telegram_bot_token.get_secret_value().split(":", 1)[0])
-
-
-class NutritionSourceSettings(StorageSettings):
-    usda_api_key: SecretStr | None = None
-    usda_timeout_seconds: float = Field(default=10, ge=1, le=30, allow_inf_nan=False)
-
-    @field_validator("usda_api_key", mode="before")
-    @classmethod
-    def empty_key_is_disabled(cls, value: object) -> object:
-        if isinstance(value, str):
-            return value.strip() or None
-        return value

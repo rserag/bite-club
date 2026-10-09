@@ -67,6 +67,7 @@ class MealReply:
     supplement_intake_revision_id: int | None = None
     ui_buttons: tuple[tuple[str, str], ...] = ()
     review_required: bool = False
+    label_handoff: bool = False
 
 
 def _short(value: str, limit: int = 90) -> str:

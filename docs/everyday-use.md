@@ -7,7 +7,7 @@ main actions; a configured Mini App replaces that menu button with Open diary.
 ## Logging and reusing meals
 
 Choose Log food, type a food name, select the exact reviewed food version, then
-enter measured grams. Review the item list, add another food if needed, and save.
+enter measured grams. **Search all foods** searches USDA even when a saved cooked/raw variant exists. Review the full food name, preparation and source, then save the measured food and meal together. **Enter food label** adds missing composition in Telegram and returns to the pending meal. Review the item list, add another food if needed, and save.
 An amount prefixed with `about` opens a draft outside your totals; approve its
 current displayed revision explicitly. Changing a draft invalidates its old
 approval button. Guides survive a worker restart and expire after 30 minutes of
@@ -28,6 +28,8 @@ original receipt. Repeated taps cannot duplicate the same consumption; to log
 another occurrence, open a fresh preview or its latest receipt. Logging estimated
 portions again always needs a new itemized draft approval. Favorite and recipe
 updates affect future uses and preserve earlier meal snapshots.
+
+Use **Recipes** or `/recipes` for guided ingredients, cooked yield or servings, batch corrections and portion logging. Use `/label` for reviewed nutrition-label text, or `/barcode` followed by readable digits when the optional barcode source is enabled. A product lookup saves no consumption until you supply and confirm a quantity.
 
 ## Reports and setup
 

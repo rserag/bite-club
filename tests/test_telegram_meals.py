@@ -355,11 +355,19 @@ async def test_unresolved_or_rough_meals_never_partially_save(service, store, ca
     if text == "about 100g rice":
         assert "Not in your totals" in response["payload"]["text"]
         assert response["payload"]["draft_revision"] == 1
+    elif text == "100g rice; 50g missing":
+        assert "No matching food yet" in response["payload"]["text"]
     else:
         assert "Nothing was changed" in response["payload"]["text"]
     assert await ledger_counts(store) == (0, 0)
     async with store.engine.connect() as connection:
-        expected_kind = "draft_receipt" if text == "about 100g rice" else "meal_rejected"
+        expected_kind = (
+            "draft_receipt"
+            if text == "about 100g rice"
+            else "navigation"
+            if text == "100g rice; 50g missing"
+            else "meal_rejected"
+        )
         assert await connection.scalar(sa.select(actions.c.kind)) == expected_kind
 
 
@@ -367,7 +375,8 @@ async def test_ambiguous_preparation_requires_food_version_selection(service, st
     async with store.write() as connection:
         raw = await publish_reviewed_food(connection, food_record("rice", preparation="raw"))
     response = await process(service, store, message(1, "100g rice; 50g chicken"))
-    assert "exact selection" in response["payload"]["text"]
+    assert "Choose the food and preparation" in response["payload"]["text"]
+    assert "raw" in response["payload"]["text"] and "cooked" in response["payload"]["text"]
     assert await ledger_counts(store) == (0, 0)
     choices = await process(service, store, message(2, "/foods rice"))
     assert f"#{raw.version_id}" in choices["payload"]["text"]

@@ -2,6 +2,8 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Coroutine
+from typing import Any
 
 from nutrition_bot.application.service import QueueFullError, Service
 from nutrition_bot.runtime.health import COMPONENTS
@@ -63,6 +65,13 @@ async def processor(service: Service, stop: asyncio.Event) -> None:
         await service.pulse("processor")
         if not await service.process_one():
             await pause(service, "processor", stop, 0.25)
+
+
+async def food_lookup(service: Service, stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        await service.pulse("food_lookup")
+        if not await service.process_food_lookup():
+            await pause(service, "food_lookup", stop, 0.25)
 
 
 async def send_one(service: Service, gateway: Gateway) -> bool:
@@ -153,25 +162,64 @@ async def cleanup(service: Service, stop: asyncio.Event) -> None:
         await pause(service, "cleanup", stop, 60)
 
 
+async def drain_loops(service: Service, tasks: list[asyncio.Task[None]]) -> None:
+    async def drain() -> None:
+        # Let local SQL finish before cancellation. A cancelled DBAPI cursor can
+        # retain SQLite's writer even after its connection has been invalidated.
+        # External calls run outside this lock and remain immediately cancellable.
+        async with service.store.writer_lock:
+            for task in tasks:
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    draining = asyncio.create_task(drain())
+    cancelled = False
+    while not draining.done():
+        try:
+            await asyncio.shield(draining)
+        except asyncio.CancelledError:
+            # Repeated stop signals must not abandon the barrier or child cleanup.
+            cancelled = True
+    draining.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 async def run_worker(service: Service, gateway: Gateway, stop: asyncio.Event) -> None:
     service.gateway = gateway
     await service.store.check_schema()
     await service.recover_outbox()
+    await service.recover_food_lookups()
     for component in COMPONENTS:
         await service.pulse(component)
     logger.info("worker_started")
+    failures: list[Exception] = []
+
+    async def supervise(work: Coroutine[Any, Any, None]) -> None:
+        try:
+            await work
+        except Exception as exc:
+            # TaskGroup's immediate cancellation could interrupt another writer.
+            # Keep the fatal failure, then use the same safe stop barrier.
+            failures.append(exc)
+            stop.set()
+
     try:
         async with asyncio.TaskGroup() as group:
             tasks = [
-                group.create_task(receiver(service, gateway, stop)),
-                group.create_task(processor(service, stop)),
-                group.create_task(sender(service, gateway, stop)),
-                group.create_task(cleanup(service, stop)),
-                group.create_task(scheduler(service, stop)),
+                group.create_task(supervise(receiver(service, gateway, stop))),
+                group.create_task(supervise(processor(service, stop))),
+                group.create_task(supervise(food_lookup(service, stop))),
+                group.create_task(supervise(sender(service, gateway, stop))),
+                group.create_task(supervise(cleanup(service, stop))),
+                group.create_task(supervise(scheduler(service, stop))),
             ]
-            await stop.wait()
-            for task in tasks:
-                task.cancel()
+            try:
+                await stop.wait()
+            finally:
+                await drain_loops(service, tasks)
+        if failures:
+            raise ExceptionGroup("Worker loop failed", failures)
     finally:
         for component in COMPONENTS:
             await service.pulse(component, "stopped")

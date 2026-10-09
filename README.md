@@ -39,12 +39,12 @@ The demo exercises the actual application service with **synthetic food values**
 
 ## What works today
 
-- **Daily navigation:** a short home menu, topic help, guided catalog/portion entry, favorite/recent shortcuts and receipt actions; short reports with detail toggles.
+- **Daily navigation:** a short home menu, topic help, guided catalog/portion entry, recipe creation, label entry, favorite/recent shortcuts and receipt actions; short reports with detail toggles.
 - **Optional reminders:** editable timezone, quiet hours, category switches, weight/recovery prompts, training-relative reminders and daily/weekly summaries. All categories start disabled.
-- **Optional Mini App:** authenticated mobile dashboard, food search, measured meal forms, history editing and recorded-energy charts; requires configured HTTPS ingress.
+- **Optional Mini App:** authenticated mobile dashboard, saved/USDA/barcode food search and review, measured meal forms, recipe portion corrections and recorded-energy charts; requires configured HTTPS ingress.
 - **Optional AI drafts:** app-owned ChatGPT plan OAuth or policy-restricted OpenRouter interpretation of meal text/photos; disabled until private setup and evaluation. Every AI proposal needs review before saving.
 
-- **Food diary:** measured meals, reviewed food sources, USDA lookup/cache, corrections, delete/undo, food aliases, favorites, repeats and batch recipes.
+- **Food diary:** measured meals, preparation-aware current-version search, in-flow USDA discovery/review, optional typed-barcode lookup, reviewed label entry, corrections, delete/undo, food aliases, favorites, repeats and guided batch recipes. Missing-food entry preserves pending meal items and dates; accepted source records work offline.
 - **Approval workflow:** persistent rough-portion drafts, version-specific approval, expiry and safe handling of stale buttons or edited messages.
 - **Goals and trends:** reviewed calorie/macro targets, weight history, daily/weekly reports and evidence-gated adjustment proposals.
 - **Training and recovery:** gym/BJJ sessions and details, plans, recovery check-ins and coverage-aware workload reporting.
@@ -52,7 +52,7 @@ The demo exercises the actual application service with **synthetic food values**
 - **Supplements:** reviewed creatine products, actual intake, phased regimens, dose marks and separate exposure/adherence reports. General nutrient-product entry is not yet available in Telegram.
 - **Nutrient review:** versioned adult DRI references, explicit group selection, food/supplement separation, source-specific limits and conservative two-week intake screening.
 
-Next increments include verified-food suggestions, packaged-food label/barcode workflows, broader historical AI questions, exports and automatic encrypted backups. Planned behavior is documented separately from implemented behavior. AI providers are optional and disabled in the public configuration; live deployment activation is separate.
+Next increments include verified-food suggestions, photo label/barcode interpretation, broader historical AI questions, exports and automatic encrypted backups. Planned behavior is documented separately from implemented behavior. AI providers are optional and disabled in the public configuration; live deployment activation is separate.
 
 The [AI user guide](docs/ai-user-guide.md) explains clear meal descriptions, draft review, corrections and manual fallback when AI is enabled.
 
@@ -74,13 +74,13 @@ flowchart LR
     E[Real-user E2E driver] -. dedicated test bot .-> T
 ```
 
-The worker owns five loops: receive, process, send, cleanup and reminder scheduling. SQLite runs in WAL mode with foreign keys and full synchronous writes. Network delivery is not exactly-once: a crash after Telegram accepts a reply can produce a repeated reply, while the application action remains idempotent. That boundary is documented and tested.
+The worker owns six loops: receive, process, send, cleanup, reminder scheduling and food lookup. Bounded source requests run outside database write transactions, so provider latency does not block diary actions. SQLite runs in WAL mode with foreign keys and full synchronous writes. Network delivery is not exactly-once: a crash after Telegram accepts a reply can produce a repeated reply, while the application action remains idempotent. That boundary is documented and tested.
 
 The app is single-user, not a multi-tenant hosted service. A second account does not get an independent ledger. Telegram remains part of the data path; self-hosting is not end-to-end privacy from Telegram.
 
 ## Run your own bot
 
-Create a bot through Telegram's verified BotFather. Copy `.env.example` to `.env` and fill in the token, allowed user ID and private-chat ID locally. Use `APP_TIMEZONE` for the initial IANA timezone. Review the [food catalog guide](docs/food-catalog.md) to import your own reviewed foods; the app does not ship a production nutrition database.
+Create a bot through Telegram's verified BotFather. Copy `.env.example` to `.env` and fill in the token, allowed user ID and private-chat ID locally. Use `APP_TIMEZONE` for the initial IANA timezone. Configure optional USDA/barcode sources using the [food source guide](docs/food-sources.md), or enter a [reviewed label](docs/packaged-foods.md) in Telegram. The [food catalog guide](docs/food-catalog.md) also covers operator imports; the app does not ship a production nutrition database.
 
 ```sh
 uv run nutrition-bot migrate
