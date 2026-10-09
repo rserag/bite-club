@@ -6,6 +6,12 @@ seven-day recorded-energy bars and recent measured weights. It reads current
 ledger revisions and shows missing nutrient data as unknown. Partial nutrient
 sums remain labeled; no missing-day intake or weight is invented.
 
+The dashboard follows Telegram's light or dark mode, including changes while it
+is open. Cards, charts, navigation and meal dialogs share the selected palette;
+native form controls and supported Telegram header/background bars match it too.
+Opening outside Telegram uses the light palette and still requires a private-chat
+launch to access the diary.
+
 It runs in the existing worker process and is disabled by default. Enable it only
 with a public HTTPS Mini App URL and an operator-configured reverse proxy. The
 HTTP listener defaults to loopback. Publish only that listener through the existing

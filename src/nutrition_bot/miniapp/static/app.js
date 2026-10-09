@@ -1,5 +1,19 @@
 "use strict";
 const tg = window.Telegram?.WebApp;
+function syncTheme() {
+  document.documentElement.dataset.theme =
+    tg?.colorScheme === "dark" ? "dark" : "light";
+  const background = getComputedStyle(document.documentElement)
+    .getPropertyValue("--background")
+    .trim();
+  if (tg?.isVersionAtLeast?.("6.1")) {
+    tg.setHeaderColor?.(tg.isVersionAtLeast("6.9") ? background : "bg_color");
+    tg.setBackgroundColor?.(background);
+  }
+  if (tg?.isVersionAtLeast?.("7.10")) tg.setBottomBarColor?.(background);
+}
+syncTheme();
+tg?.onEvent?.("themeChanged", syncTheme);
 const $ = (id) => document.getElementById(id);
 const state = {
   dashboard: null,
@@ -615,6 +629,4 @@ $("meal-form").onsubmit = (event) => {
 };
 tg?.ready();
 tg?.expand();
-tg?.setHeaderColor?.("#f6f5ee");
-tg?.setBackgroundColor?.("#f6f5ee");
 refresh();
