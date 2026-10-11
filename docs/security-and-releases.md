@@ -41,6 +41,13 @@ before a job with package-write permission publishes an image. Only the subseque
 protected production job receives the restricted deployment SSH key. Bot credentials
 remain on the host and are never available to build or pull-request jobs.
 
+Deployment host, port and user are production environment secrets so their values
+are masked before job output. Release and rollback capture SSH stdout/stderr in
+mode-0600 temporary files, delete them on exit and report only success or failure.
+Backup paths, database fingerprints and backend diagnostics remain private host
+records; captured SSH output must not be printed or uploaded. Review older logs
+separately: masking future runs does not erase existing exposure.
+
 The current workflow builds `linux/amd64`; verify your destination architecture
 before using it. ARM64 release validation must be added before using these images
 on an ARM64 host. The commit-based tag is a convenience pointer. Only the resulting
