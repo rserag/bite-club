@@ -3,30 +3,37 @@
 import asyncio
 import base64
 import json
+import re
 import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from nutrition_bot.adapters.ai.chatgpt_auth import access_credentials, load_credentials
 from nutrition_bot.adapters.ai.openrouter import SYSTEM_PROMPT, _strict_schema
 from nutrition_bot.adapters.ai.photos import image_media_type
 from nutrition_bot.domain.ai import (
     MAX_AI_RESPONSE_BYTES,
+    MAX_AI_STREAM_BYTES,
     MAX_AI_TEXT_BYTES,
     AiCallMetrics,
     AiCatalogItem,
     AiFailureCategory,
     AiMealIntent,
+    AiProviderEnvelope,
     AiRole,
     AiUnavailable,
     known_token_count,
     known_token_detail,
 )
 from nutrition_bot.domain.food import FrozenModel
+
+
+class _OversizedIntent(AiUnavailable):
+    """Complete structured content exceeded its bound, independently of stream framing."""
 
 
 class ChatGPTPlanPolicy(FrozenModel):
@@ -45,6 +52,33 @@ class ChatGPTPlanPolicy(FrozenModel):
     image_capability_reviewed: bool = Field(default=False, strict=True)
     daily_invocation_limit: int = Field(default=100, strict=True, ge=1, le=100)
     daily_evaluation_invocation_limit: int = Field(default=100, strict=True, ge=0, le=100)
+    extra_evaluation_date: date | None = None
+    extra_evaluation_invocation_limit: int = Field(default=0, strict=True, ge=0, le=350)
+
+    @field_validator("extra_evaluation_date", mode="before")
+    @classmethod
+    def exact_extra_evaluation_date(cls, value: object) -> object:
+        if (
+            value is not None
+            and type(value) is not date
+            and (
+                not isinstance(value, str)
+                or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value) is None
+            )
+        ):
+            raise ValueError("An extra evaluation allowance requires a UTC calendar date.")
+        return value
+
+    @model_validator(mode="after")
+    def dated_evaluation_allowance(self) -> "ChatGPTPlanPolicy":
+        if (self.extra_evaluation_date is not None) != (self.extra_evaluation_invocation_limit > 0):
+            raise ValueError("An extra evaluation allowance requires both a UTC date and count.")
+        return self
+
+    def effective_evaluation_limit(self, today: date) -> int:
+        if self.extra_evaluation_date == today:
+            return self.daily_evaluation_invocation_limit + self.extra_evaluation_invocation_limit
+        return self.daily_evaluation_invocation_limit
 
     def check(self, role: AiRole) -> str:
         today = datetime.now(UTC).date()
@@ -153,10 +187,17 @@ class ChatGPTPlanAdapter:
             )
         # SIWC preview rejects temperature and max_output_tokens. A byte/time
         # receiving bound is not represented as a guaranteed model-output cap.
+        # The supported developer role carries static rules separately from the
+        # user meal. Send those rules once; explicit system messages are rejected.
         return {
             "model": model,
-            "instructions": SYSTEM_PROMPT,
-            "input": [{"role": "user", "content": content}],
+            "input": [
+                {
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": SYSTEM_PROMPT}],
+                },
+                {"role": "user", "content": content},
+            ],
             "store": False,
             "stream": True,
             "text": {
@@ -200,7 +241,13 @@ class ChatGPTPlanAdapter:
             try:
                 models = await self._models(token)
                 if not any(
-                    item.get("slug") == model and item.get("visibility") == "list"
+                    item.get("slug") == model
+                    and item.get("visibility") == "list"
+                    and (
+                        role != "meal_photo"
+                        or isinstance(item.get("input_modalities"), list)
+                        and "image" in item["input_modalities"]
+                    )
                     for item in models
                 ):
                     raise AiUnavailable(
@@ -234,10 +281,10 @@ class ChatGPTPlanAdapter:
                         raise ValueError
                     data = bytearray()
                     async for chunk in response.aiter_bytes():
-                        data.extend(chunk)
-                        if len(data) > MAX_AI_RESPONSE_BYTES:
+                        if len(data) + len(chunk) > MAX_AI_STREAM_BYTES:
                             metrics.failure_category = "oversized"
                             raise ValueError
+                        data.extend(chunk)
                 _collect_stream_metrics(bytes(data), expected_model=model, metrics=metrics)
                 return parse_completed_stream(bytes(data), expected_model=model)
             except httpx.TimeoutException:
@@ -252,6 +299,11 @@ class ChatGPTPlanAdapter:
                 metrics.failure_category = "network"
                 raise AiUnavailable(
                     "ChatGPT could not complete a validated meal draft. Enter it manually."
+                ) from None
+            except _OversizedIntent:
+                metrics.failure_category = "oversized"
+                raise AiUnavailable(
+                    "ChatGPT returned an oversized meal proposal. Enter it manually."
                 ) from None
             except (ValueError, KeyError, TypeError):
                 if metrics.failure_category is None:
@@ -349,7 +401,7 @@ def _collect_stream_metrics(data: bytes, *, expected_model: str, metrics: AiCall
 
 
 def parse_completed_stream(data: bytes, *, expected_model: str) -> AiMealIntent:
-    if len(data) > MAX_AI_RESPONSE_BYTES:
+    if len(data) > MAX_AI_STREAM_BYTES:
         raise AiUnavailable("ChatGPT returned an oversized response.")
     completed: dict[str, Any] | None = None
     completed_items: dict[int, dict[str, Any]] = {}
@@ -427,7 +479,11 @@ def parse_completed_stream(data: bytes, *, expected_model: str) -> AiMealIntent:
                 texts.append(part["text"])
         if len(texts) != 1:
             raise ValueError
-        return AiMealIntent.model_validate_json(texts[0])
+        if len(texts[0].encode()) > MAX_AI_RESPONSE_BYTES:
+            raise _OversizedIntent("ChatGPT returned an oversized meal proposal.")
+        return AiProviderEnvelope.model_validate_json(texts[0]).to_intent()
+    except _OversizedIntent:
+        raise
     except (UnicodeError, ValueError, KeyError, TypeError, AttributeError):
         raise AiUnavailable("ChatGPT did not return a complete valid meal proposal.") from None
 

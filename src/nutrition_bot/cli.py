@@ -5,7 +5,9 @@ import logging
 import os
 import signal
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
@@ -13,6 +15,54 @@ from nutrition_bot.config import BotSettings, NutritionSourceSettings, StorageSe
 from nutrition_bot.logging import configure_logging
 from nutrition_bot.runtime.health import check_health
 from nutrition_bot.runtime.lock import database_lock
+
+if TYPE_CHECKING:
+    from nutrition_bot.adapters.database.store import Store
+    from nutrition_bot.application.ai_service import AiService
+
+
+def configured_ai_service(store: "Store", settings: BotSettings) -> "AiService":
+    """Optional provider setup failures leave local diary workflows available."""
+    from nutrition_bot.application.ai_service import AiService
+    from nutrition_bot.domain.ai import AiUnavailable
+
+    disabled = AiService(store, text_enabled=False, photo_enabled=False)
+    if not (settings.ai_text_enabled or settings.ai_photo_enabled):
+        return disabled
+    try:
+        if settings.llm_provider == "openrouter":
+            if not settings.openrouter_api_key or not settings.ai_endpoint_manifest:
+                raise AiUnavailable("The selected optional route is not configured.")
+            from nutrition_bot.adapters.ai.openrouter import OpenRouterAdapter
+            from nutrition_bot.domain.ai_policy import load_manifest
+
+            reviewed_manifest = load_manifest(settings.ai_endpoint_manifest)
+            return AiService(
+                store,
+                reviewed_manifest,
+                OpenRouterAdapter(settings.openrouter_api_key),
+                text_enabled=settings.ai_text_enabled,
+                photo_enabled=settings.ai_photo_enabled,
+            )
+        if settings.llm_provider == "chatgpt":
+            if not settings.chatgpt_credentials_path or not settings.chatgpt_policy_path:
+                raise AiUnavailable("The selected optional route is not configured.")
+            from nutrition_bot.adapters.ai.chatgpt_plan import ChatGPTPlanAdapter, load_plan_policy
+
+            reviewed_policy = load_plan_policy(settings.chatgpt_policy_path)
+            return AiService(
+                store,
+                plan_adapter=ChatGPTPlanAdapter(
+                    settings.chatgpt_credentials_path,
+                    reviewed_policy,
+                ),
+                text_enabled=settings.ai_text_enabled,
+                photo_enabled=settings.ai_photo_enabled,
+            )
+    except AiUnavailable:
+        # Never log configuration files, credential values or policy content.
+        logging.getLogger("nutrition_bot.ai").warning("ai_configuration_unavailable")
+    return disabled
 
 
 def migrate(settings: StorageSettings) -> None:
@@ -49,32 +99,7 @@ async def run(settings: BotSettings) -> None:
         loop.add_signal_handler(signum, stop.set)
     store = Store(settings)
     try:
-        from nutrition_bot.application.ai_service import AiService
-
-        ai_service = AiService(store)
-        if settings.llm_provider == "openrouter":
-            if not settings.openrouter_api_key or not settings.ai_endpoint_manifest:
-                raise ValueError("OpenRouter needs a private key and reviewed endpoint manifest")
-            from nutrition_bot.adapters.ai.openrouter import OpenRouterAdapter
-            from nutrition_bot.domain.ai_policy import load_manifest
-
-            ai_service = AiService(
-                store,
-                load_manifest(settings.ai_endpoint_manifest),
-                OpenRouterAdapter(settings.openrouter_api_key),
-            )
-        elif settings.llm_provider == "chatgpt":
-            if not settings.chatgpt_credentials_path or not settings.chatgpt_policy_path:
-                raise ValueError("ChatGPT needs app-owned credentials and a reviewed plan policy")
-            from nutrition_bot.adapters.ai.chatgpt_plan import ChatGPTPlanAdapter, load_plan_policy
-
-            ai_service = AiService(
-                store,
-                plan_adapter=ChatGPTPlanAdapter(
-                    settings.chatgpt_credentials_path,
-                    load_plan_policy(settings.chatgpt_policy_path),
-                ),
-            )
+        ai_service = configured_ai_service(store, settings)
         try:
             await ai_service.recover_abandoned()
             async with (
@@ -303,18 +328,20 @@ def main() -> None:
         elif args.command == "ai-metrics":
             from nutrition_bot.application.ai_metrics import metrics_summary
 
+            report_now = datetime.now(UTC)
             bot_limit = evaluation_limit = None
             if args.chatgpt_policy is not None:
                 from nutrition_bot.adapters.ai.chatgpt_plan import load_plan_policy
 
                 policy = load_plan_policy(args.chatgpt_policy)
                 bot_limit = policy.daily_invocation_limit
-                evaluation_limit = policy.daily_evaluation_invocation_limit
+                evaluation_limit = policy.effective_evaluation_limit(report_now.date())
             print(
                 json.dumps(
                     metrics_summary(
                         StorageSettings().database_path,
                         days=args.days,
+                        now=report_now.timestamp(),
                         bot_daily_limit=bot_limit,
                         evaluation_daily_limit=evaluation_limit,
                     )

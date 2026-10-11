@@ -2,7 +2,12 @@
 
 This runbook targets a single operator-managed Linux VM. Automated delivery and host migration are separate tasks. This procedure uses SSH and Docker Compose; it does not require a registry, domain, inbound application port, or AI account.
 
-The current manual release includes the implemented local diary features documented in the repository. AI, reminders, exports and automated backups remain unimplemented. Unsupported messages do not create nutrition records. Passing the checks below does not make the completed assistant production-ready.
+The current manual release includes the implemented capabilities documented in
+the README. Optional AI and reminders require their own configuration; a source
+package does not activate them. Use the current deployment's private inventory
+to resolve its directories, image and configuration before applying these
+examples. For the protected controller's operator-only private image path, see
+[continuous deployment](continuous-deployment.md).
 
 The commands are examples to execute deliberately, not evidence that each drill has been performed. Use Bash on the VM. Replace the SSH alias and release identifier with your own values; keep host addresses and personal settings in private deployment notes.
 
@@ -92,7 +97,10 @@ The manifest detects a mismatched/corrupted transfer; it is not a signature. The
 
 On the development machine, create an ignored private file from `.env.example`. Set a valid `TELEGRAM_BOT_TOKEN`, `ALLOWED_TELEGRAM_USER_ID`, `ALLOWED_TELEGRAM_CHAT_ID`, and intended IANA `APP_TIMEZONE`. Both IDs must be positive; this release accepts only the configured user's private chat. Compose sets the container database path itself.
 
-No paid AI key is used. A USDA key is optional for explicit remote food lookup; manual/local food workflows remain available. Timezone seeds the profile on its first `/start`; changing the environment later does not overwrite an existing profile's timezone. The settings UI is a later feature.
+AI credentials are optional and transferred separately only after their quality
+and privacy gates pass. A USDA key is optional for explicit remote food lookup;
+manual/local food workflows remain available. Timezone seeds the profile on its
+first `/start`; use the existing settings UI to change an established profile.
 
 ```bash
 mkdir -p private

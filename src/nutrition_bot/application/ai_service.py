@@ -2,10 +2,12 @@
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime
-from typing import cast
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from typing import Literal, cast
 
 import sqlalchemy as sa
 from aiogram.types import Message
@@ -35,12 +37,821 @@ from nutrition_bot.application.ai_budget import (
 from nutrition_bot.application.draft_conversation import draft_receipt
 from nutrition_bot.application.food_retrieval import ai_food_context
 from nutrition_bot.application.meal_conversation import MealReply, _date_timestamp
-from nutrition_bot.domain.ai import AiCallMetrics, AiCatalogItem, AiOutcome, AiRole, AiUnavailable
+from nutrition_bot.domain.ai import (
+    MAX_AI_TEXT_BYTES,
+    AiCallMetrics,
+    AiCatalogItem,
+    AiDiscoveryItem,
+    AiMealIntent,
+    AiMealItem,
+    AiOutcome,
+    AiQuantity,
+    AiRole,
+    AiUnavailable,
+)
 from nutrition_bot.domain.ai_policy import AiEndpointManifest
-from nutrition_bot.domain.drafts import DraftContent, PlannedItem
+from nutrition_bot.domain.drafts import (
+    CookingMethod,
+    DraftContent,
+    PlannedItem,
+    PreparationAttribute,
+    PreparationDetails,
+    ReportedCookingMethod,
+)
 from nutrition_bot.domain.food import exact_decimal, grams_to_milligrams
 
 logger = logging.getLogger("nutrition_bot.ai_metrics")
+_INVALID_DATE_NOTE = "Please provide one valid meal date, today or in the past."
+_CONFLICTING_PORTION_NOTE = (
+    "Please provide one edible weight in grams for each portion with conflicting amounts."
+)
+
+
+_CAPTION_MASS = re.compile(
+    r"(?<![\w.,])([0-9]+(?:[.,][0-9]{1,3})?)\s*"
+    r"(kilograms?|milligrams?|grams?|kg|mg|g)\b",
+    re.IGNORECASE,
+)
+_ALTERNATIVE_MASS = re.compile(
+    r"(?<![\w.,+\-−–—])(?P<first>[0-9]+(?:[.,][0-9]{1,3})?)\s*"
+    r"(?P<first_unit>kilograms?|milligrams?|grams?|kg|mg|g)?\s+or\s+"
+    r"(?:(?:about|around|approximate(?:ly)?|approx|roughly)\s+)?"
+    r"(?P<second>[0-9]+(?:[.,][0-9]{1,3})?)\s*"
+    r"(?P<second_unit>kilograms?|milligrams?|grams?|kg|mg|g)?(?!\w|[.,][0-9])",
+    re.IGNORECASE,
+)
+_ISO_DATE = re.compile(r"(?<![0-9])[0-9]{4}-[0-9]{2}-[0-9]{2}(?![0-9])")
+_APPROXIMATE = re.compile(
+    r"\b(?:about|around|approximate(?:ly)?|approx|rough(?:ly)?|estimate[ds]?|maybe|perhaps)\b|"
+    r"\bI think\b|[~≈]",
+    re.IGNORECASE,
+)
+_FOOD_NAME_NOISE = frozenset(
+    "raw cooked synthetic alias as sold prepared fried boiled grilled baked steamed roasted "
+    "stewed sauteed sautéed skin skinless boneless bone meat flesh only peeled unpeeled "
+    "white brown long grain enriched unenriched fortified unfortified salted unsalted "
+    "plain on in".split()
+)
+_MASS_CONNECTIVES = frozenset(
+    "exactly weighed weighs weighing weight gram grams g kg kilogram kilograms "
+    "mg milligram milligrams edible mass amount at was is of about around "
+    "approximately approximate approx roughly rough estimate estimated estimates "
+    "maybe perhaps after before cooking stewing roasting boiling steaming baking grilling "
+    "frying raw cooked stewed grilled boiled steamed baked roasted sauteed sautéed "
+    "measured measurement measurements portion portions total its their it the this that "
+    "own my were only or to between either range".split()
+)
+_CONFLICT_REFERENCE_WORDS = (
+    _MASS_CONNECTIVES
+    | _FOOD_NAME_NOISE
+    | frozenset(
+        "i we our had ate eating have meal food serving servings for first second third "
+        "either unsure uncertain cannot can remember which whether if one not don dont t "
+        "know sure lunch dinner breakfast today yesterday on included including".split()
+    )
+)
+_SOURCE_DELIMITER = re.compile(
+    r"[,;\n]|(?<![0-9])\.(?![0-9])|\b(?:and|plus|then|with)\b", re.IGNORECASE
+)
+_MASS_EVIDENCE_SEPARATOR = re.compile(r"(?<![0-9]),|,(?![0-9])|[;\n]")
+_SOURCE_CONTINUATION = (
+    _MASS_CONNECTIVES
+    | _FOOD_NAME_NOISE
+    | frozenset(
+        "the this that its it a was were portion portions total my own all quantities weights "
+        "or to with after before "
+        "cooking only no without skin bones bone salt oil peeled unpeeled shell flesh meat "
+        "raw uncooked edible measured measurement measurements dry sauce butter milk sugar "
+        "water added fat including ingredients use preparation i did didn t have haven "
+        "not never unknown unmeasured "
+        "weigh weighed measure".split()
+    )
+)
+_UNCLEAR_MASS = re.compile(
+    r"[-+−–—]\s*[0-9]|[0-9]\s*[/,:]\s*[0-9]|[0-9]\s+(?:to|or)\s+[0-9]|"
+    r"\b(?:between|either|range)\b|\b(?:did not|didn't|not yet|have not|haven't|never|not)"
+    r"\s+(?:weigh|measure)|\bnot (?:weighed|measured)\b|"
+    r"\b(?:not|unknown|unmeasured)\s+edible\s+(?:weight|mass|portion|amount|flesh|meat)\b",
+    re.IGNORECASE,
+)
+_NON_EDIBLE_MASS = re.compile(
+    r"\b(?:bone-in|with bones|unpeeled|shell-on|in (?:its |the )?(?:shell|peel)|"
+    r"including (?:the )?(?:bones|shell|peel|bowl|plate|container)|gross weight)\b",
+    re.IGNORECASE,
+)
+_EDIBLE_MASS = re.compile(r"\bedible\s+(?:weight|mass|portion|amount|flesh|meat)\b", re.IGNORECASE)
+_BENIGN_PREPARATION_TAIL = re.compile(
+    r"with\s+no\s+(?:added\s+)?(?:oil|sauce|salt|fat|butter|milk|sugar)"
+    r"(?:\s+or\s+(?:oil|sauce|salt|fat|butter|milk|sugar))*[\s.,!]*",
+    re.IGNORECASE,
+)
+_NEGATIVE_PREPARATION = re.compile(
+    r"\b(?:without|no)\s+(?:added\s+)?(?:oil|sauce|salt|fat|butter|milk|sugar|ingredients)"
+    r"(?:\s+or\s+(?:oil|sauce|salt|fat|butter|milk|sugar))*\b",
+    re.IGNORECASE,
+)
+_SKIN_PREPARATION = re.compile(r"\b(?:with\s+skin|meat\s+and\s+skin)\b", re.IGNORECASE)
+
+
+def _food_words(food_name: str, aliases: tuple[str, ...] = ()) -> tuple[frozenset[str], ...]:
+    """Keep each reviewed name/alias separate from preparation descriptor clauses."""
+    groups = []
+    for name in (food_name, *aliases):
+        primary = re.split(r",|\b(?:with|without|no|not)\b", name.casefold(), maxsplit=1)[0]
+        words = frozenset(
+            word
+            for word in re.findall(r"[^\W_]+", primary)
+            if word not in _FOOD_NAME_NOISE and not word.isdecimal() and len(word) > 1
+        )
+        if words:
+            groups.append(words)
+    return tuple(groups)
+
+
+def _names_food(source: str, food_words: tuple[frozenset[str], ...]) -> bool:
+    tokens = set(re.findall(r"[^\W_]+", source.casefold()))
+    return any(
+        all(word in tokens or word + "s" in tokens or word + "es" in tokens for word in group)
+        for group in food_words
+    )
+
+
+def _source_parts(text: str) -> list[tuple[int, int, str]]:
+    """Keep signed masses, decimal commas and numeric ranges in their original clauses."""
+    parts = []
+    start = 0
+    for separator in _SOURCE_DELIMITER.finditer(text):
+        before, after = text[: separator.start()], text[separator.end() :]
+        if separator[0] == "," and before[-1:].isdigit() and after[:1].isdigit():
+            continue
+        if (
+            separator[0].casefold() == "and"
+            and re.search(r"[0-9]\s*$", before)
+            and re.match(r"\s*[0-9]", after)
+        ):
+            continue
+        if separator[0].casefold() == "with" and re.match(
+            r"\s*(?:skin|bones|salt|oil|no)\b", after, re.IGNORECASE
+        ):
+            continue
+        parts.append((start, separator.start(), text[start : separator.start()]))
+        start = separator.end()
+    parts.append((start, len(text), text[start:]))
+    return parts
+
+
+def _source_context(
+    text: str, evidence: str | None, food_words: tuple[frozenset[str], ...]
+) -> str | None:
+    """Use the original enclosing clause, never a model-trimmed qualifier span.
+
+    Punctuation-only mass continuations stay attached to their food. A clause
+    naming another food cannot lend its state, mass or uncertainty to this one.
+    Repeated identical excerpts are ambiguous and cannot authorize a mass.
+    """
+    parts = _source_parts(text)
+    if evidence is None:
+        relevant = [
+            _source_context(text, part, food_words)
+            for _, _, part in parts
+            if _names_food(part, food_words)
+        ]
+        # Legacy missing spans use the same original adjacent qualifiers. A
+        # repeated/ambiguous source clause cannot authorize a reviewed state.
+        return (
+            " ".join(part for part in relevant if part is not None)
+            if relevant and all(part is not None for part in relevant)
+            else None
+        )
+    start = text.find(evidence)
+    if start < 0 or text.find(evidence, start + 1) >= 0:
+        return None
+    end = start + len(evidence)
+    included = [
+        index for index, (left, right, _) in enumerate(parts) if left < end and right > start
+    ]
+    if not included:
+        return None
+    first, last = included[0], included[-1]
+
+    def continuation(part: str) -> bool:
+        words = set(re.findall(r"[^\W_]+", _CAPTION_MASS.sub("", part).casefold()))
+        return (
+            bool(words)
+            and all(word.isdecimal() or word in _SOURCE_CONTINUATION for word in words)
+            and (not _CAPTION_MASS.search(part) or _measurement_reference(part))
+        )
+
+    def separator(left: int, right: int) -> bool:
+        value = text[left:right]
+        return value.strip() in {",", ".", ";"} or "\n" in value and not value.strip()
+
+    while (
+        first > 0
+        and separator(parts[first - 1][1], parts[first][0])
+        and continuation(parts[first - 1][2])
+    ):
+        first -= 1
+    while (
+        last + 1 < len(parts)
+        and separator(parts[last][1], parts[last + 1][0])
+        and continuation(parts[last + 1][2])
+    ):
+        last += 1
+    return text[parts[first][0] : parts[last][1]]
+
+
+def _single_food_quantity_evidence(evidence: str, food_words: tuple[frozenset[str], ...]) -> bool:
+    """Known skin preparation is a descriptor, never a second food or portion."""
+    association = _SKIN_PREPARATION.sub("", evidence)
+    continuation = re.search(r"\b(?:and\s+then|then|and)\b", association, re.I)
+    if continuation is not None:
+        prefix = association[: continuation.start()]
+        tail = association[continuation.end() :]
+        words = set(re.findall(r"[^\W_]+", tail.casefold()))
+        if (
+            _names_food(prefix, food_words)
+            and len(tuple(_CAPTION_MASS.finditer(prefix))) == 1
+            and words
+            and words.issubset(_PREPARATION_CONTINUATION)
+            and not _CAPTION_MASS.search(tail)
+            and any(re.search(pattern, tail, re.I) for pattern in _METHOD_PATTERNS.values())
+        ):
+            association = prefix
+    if re.search(r"\b(?:and|plus|then)\b", association, re.IGNORECASE):
+        return False
+    connector = re.search(r"\bwith\b", association, re.IGNORECASE)
+    if connector is None:
+        return True
+    prefix, suffix = association[: connector.start()], association[connector.start() :]
+    return (
+        _BENIGN_PREPARATION_TAIL.fullmatch(suffix) is not None
+        and _names_food(prefix, food_words)
+        and len(tuple(_CAPTION_MASS.finditer(prefix))) == 1
+    )
+
+
+def _measurement_reference(clause: str) -> bool:
+    words = set(
+        re.findall(
+            r"[^\W_]+",
+            _NEGATIVE_PREPARATION.sub("", _CAPTION_MASS.sub("", clause)).casefold(),
+        )
+    )
+    return all(word.isdecimal() or word in _MASS_CONNECTIVES for word in words)
+
+
+def _conflicting_portion(text: str, food_words: tuple[tuple[frozenset[str], ...], ...]) -> bool:
+    """Distinct alternative masses must refer to one original food/portion.
+
+    This deliberately excludes ranges, sums, separate servings and distinct
+    before/after cooking measurements. A food-free measurement sentence may
+    refer back only through food-free measurement continuations; unrelated
+    prose or another food stops that reference. Model excerpts do not decide
+    whether the original input contains a conflict.
+    """
+    parts = _source_parts(text)
+
+    def named_groups(clause: str) -> set[frozenset[str]]:
+        groups = {group for names in food_words for group in names if _names_food(clause, (group,))}
+        # Generic and specific catalog names can identify the same food.
+        return {group for group in groups if not any(group < other for other in groups)}
+
+    def reference_words(clause: str) -> set[str]:
+        return set(
+            re.findall(
+                r"[^\W_]+",
+                _CAPTION_MASS.sub(
+                    " ", _ALTERNATIVE_MASS.sub(" ", _ISO_DATE.sub(" ", clause))
+                ).casefold(),
+            )
+        )
+
+    def one_food_reference(clause: str, names: set[frozenset[str]]) -> bool:
+        if len(names) != 1:
+            return False
+        group = next(iter(names))
+        # Match the same inflections as the catalog identity check.
+        food_tokens = {variant for word in group for variant in (word, word + "s", word + "es")}
+        return reference_words(clause).issubset(
+            _CONFLICT_REFERENCE_WORDS | _SOURCE_CONTINUATION | food_tokens
+        )
+
+    def grams(number: str, unit: str) -> Decimal:
+        factor = (
+            Decimal(1000)
+            if unit.casefold().startswith("k")
+            else Decimal("0.001")
+            if unit.casefold().startswith("m")
+            else Decimal(1)
+        )
+        return Decimal(number.replace(",", ".")) * factor
+
+    for index, (_, _, clause) in enumerate(parts):
+        for match in _ALTERNATIVE_MASS.finditer(clause):
+            first_unit = match["first_unit"] or match["second_unit"]
+            second_unit = match["second_unit"] or match["first_unit"]
+            if first_unit is None or second_unit is None:
+                continue
+            first = grams(match["first"], first_unit)
+            second = grams(match["second"], second_unit)
+            if first <= 0 or second <= 0 or first == second:
+                continue
+            if re.search(
+                r"\b(?:before cooking|weighed raw|dry weight)\b", clause, re.I
+            ) and re.search(r"\b(?:after cooking|weighed cooked)\b", clause, re.I):
+                continue
+            names = named_groups(clause)
+            words = reference_words(clause)
+            if names:
+                # A second named or unknown food cannot lend a competing mass.
+                if one_food_reference(clause, names):
+                    return True
+                continue
+            if not words.issubset(_CONFLICT_REFERENCE_WORDS):
+                continue
+            previous = index - 1
+            while previous >= 0:
+                antecedent = parts[previous][2]
+                names = named_groups(antecedent)
+                if names:
+                    if one_food_reference(antecedent, names):
+                        return True
+                    break
+                if antecedent.strip() and not _measurement_reference(antecedent):
+                    break
+                previous -= 1
+    return False
+
+
+def _supported_quantity(
+    item: AiQuantity,
+    *,
+    text: str,
+    food_name: str,
+    role: AiRole,
+    food_aliases: tuple[str, ...] = (),
+) -> AiQuantity:
+    """A visual impression cannot supply edible mass, even if the model claims it can."""
+    if item.grams is None:
+        return item.model_copy(
+            update={
+                "quantity_source": "unresolved",
+                "uncertainty": "image_unmeasured" if role == "meal_photo" else "portion_missing",
+                "quantity_evidence": None,
+            }
+        )
+    evidence = item.quantity_evidence
+    food_words = _food_words(food_name, food_aliases)
+    named = _names_food(evidence or "", food_words)
+    source = _source_context(text, evidence, food_words)
+    supported = False
+    if (
+        evidence is not None
+        and source is not None
+        and named
+        and _single_food_quantity_evidence(evidence, food_words)
+        # Date validity/conflicts are checked before quantity normalization. Its
+        # hyphens cannot become signs/ranges, while actual mass signs remain.
+        and not _UNCLEAR_MASS.search(_ISO_DATE.sub(" ", source).replace(",", "."))
+        and not (_NON_EDIBLE_MASS.search(source) and not _EDIBLE_MASS.search(source))
+        and len(tuple(_CAPTION_MASS.finditer(source))) == 1
+    ):
+        masses = tuple(_CAPTION_MASS.finditer(evidence))
+        for match in masses if len(masses) == 1 else ():
+            if _MASS_EVIDENCE_SEPARATOR.search(evidence):
+                # A punctuation-separated amount may refer back to a named
+                # food, but cannot borrow another food's weighed quantity.
+                mass_clause = next(
+                    clause
+                    for clause in _MASS_EVIDENCE_SEPARATOR.split(evidence)
+                    if match[0] in clause
+                )
+                if not _names_food(mass_clause, food_words) and not _measurement_reference(
+                    mass_clause
+                ):
+                    continue
+            unit = match[2].casefold()
+            factor = (
+                Decimal(1000)
+                if unit.startswith("k")
+                else (Decimal("0.001") if unit.startswith("m") else Decimal(1))
+            )
+            if Decimal(match[1].replace(",", ".")) * factor == Decimal(item.grams):
+                supported = True
+                break
+    if not supported:
+        return item.model_copy(
+            update={
+                "grams": None,
+                "quantity_source": "unresolved",
+                "uncertainty": "image_unmeasured" if role == "meal_photo" else "portion_missing",
+                "quantity_evidence": None,
+            }
+        )
+    approximate = bool(_APPROXIMATE.search(source or ""))
+    return item.model_copy(
+        update={
+            "quantity_source": "approximate" if approximate else "reported",
+            "uncertainty": "user_approximation" if approximate else "none",
+            # Raw source excerpts are transient validation evidence, never ledger provenance.
+            "quantity_evidence": None,
+        }
+    )
+
+
+def validate_proposal(
+    proposal: AiMealIntent,
+    *,
+    catalog: tuple[AiCatalogItem, ...],
+    text: str,
+    local_date: date,
+    role: AiRole,
+) -> AiMealIntent | None:
+    """Validate exact context identities and safely resolve quantity provenance locally."""
+    known = {food.food_version_id: food for food in catalog}
+    input_date = _input_date(text, local_date)
+    if any(item.food_version_id not in known for item in proposal.items) or any(
+        item.food_version_id is not None
+        and (
+            item.food_version_id not in known
+            or item.preparation != known[item.food_version_id].preparation
+        )
+        for item in proposal.discovery_items
+    ):
+        return None
+    if input_date is None:
+        # An invalid/conflicting source date cannot authorize a meal or food
+        # discovery. A correctly bounded empty clarification stays actionable.
+        if (
+            proposal.intent == "clarify"
+            and not proposal.items
+            and not proposal.discovery_items
+            and proposal.clarification_reason == "incomplete"
+            and proposal.local_date == local_date
+        ):
+            return proposal.model_copy(
+                update={"unresolved": (_INVALID_DATE_NOTE,), "full_input_accounted_for": False}
+            )
+        return None
+    if proposal.local_date != input_date:
+        return None
+    if (proposal.intent == "meal" or proposal.discovery_items) and _conflicting_portion(
+        text,
+        tuple(_food_words(food.name, food.aliases) for food in catalog)
+        + tuple(_food_words(item.query) for item in proposal.discovery_items),
+    ):
+        return AiMealIntent(
+            intent="clarify",
+            label=proposal.label,
+            local_date=proposal.local_date,
+            items=(),
+            unresolved=(_CONFLICTING_PORTION_NOTE,),
+            full_input_accounted_for=False,
+            clarification_reason="portion",
+        )
+    if any(
+        not _preparation_matches(item.identity_evidence, text, known[item.food_version_id])
+        for item in proposal.items
+    ) or any(
+        item.food_version_id is not None
+        and not _preparation_matches(
+            item.identity_evidence or item.query,
+            text,
+            known[item.food_version_id],
+        )
+        for item in proposal.discovery_items
+    ):
+        return AiMealIntent(
+            intent="clarify",
+            label=proposal.label,
+            local_date=proposal.local_date,
+            items=(),
+            unresolved=("Preparation needs review.",),
+            full_input_accounted_for=False,
+            clarification_reason="preparation",
+        )
+    items = tuple(
+        cast(
+            AiMealItem,
+            _supported_quantity(
+                item,
+                text=text,
+                food_name=known[item.food_version_id].name,
+                food_aliases=known[item.food_version_id].aliases,
+                role=role,
+            ),
+        )
+        for item in proposal.items
+    )
+    discovery = tuple(
+        cast(
+            AiDiscoveryItem,
+            _supported_quantity(
+                item,
+                text=text,
+                food_name=item.query,
+                role=role,
+            ),
+        )
+        for item in proposal.discovery_items
+    )
+    return proposal.model_copy(update={"items": items, "discovery_items": discovery})
+
+
+_QUALIFIERS = {
+    "fried": r"\b(?:fried|frying|fry)\b",
+    "grilled": r"\b(?:grilled|grilling|grill)\b",
+    "stewed": r"\b(?:stewed|stewing|stew)\b",
+    "boiled": r"\b(?:boiled|boiling|boil)\b",
+    "steamed": r"\b(?:steamed|steaming|steam)\b",
+    "roasted": r"\b(?:roasted|roasting|roast)\b",
+    "baked": r"\b(?:baked|baking|bake)\b",
+    "sauteed": r"\b(?:sauteed|sautéed|saute|sauté)\b",
+    "unsalted": r"\b(?:unsalted|without salt|no salt)\b",
+    "salted": r"\b(?:salted|with salt|salt added)\b",
+    "unenriched": r"\b(?:unenriched|not enriched)\b",
+    "enriched": r"\benriched\b",
+    "unfortified": r"\b(?:unfortified|not fortified)\b",
+    "fortified": r"\bfortified\b",
+    "skinless": r"\b(?:skinless|without skin|no skin)\b",
+    "with_skin": r"\b(?:with skin|skin-on|meat and skin)\b",
+    "boneless": r"\b(?:boneless|without bones|no bones)\b",
+    "bone_in": r"\b(?:bone-in|with bones)\b",
+    "without_oil": r"\b(?:without oil|no oil|oil-free)\b",
+    "with_oil": r"\b(?:with oil|in oil|oil added)\b",
+}
+
+
+def _qualifiers(text: str) -> set[str]:
+    patterns = _QUALIFIERS | _METHOD_PATTERNS
+    found = {key for key, pattern in patterns.items() if re.search(pattern, text, re.IGNORECASE)}
+    for negative, positive in (("unenriched", "enriched"), ("unfortified", "fortified")):
+        if negative in found:
+            found.discard(positive)
+    return found
+
+
+_METHOD_PATTERNS = {
+    **{
+        key: _QUALIFIERS[key]
+        for key in (
+            "fried",
+            "grilled",
+            "stewed",
+            "boiled",
+            "steamed",
+            "roasted",
+            "baked",
+            "sauteed",
+        )
+    },
+    "pan_fried": r"\bpan[- ]fried\b",
+    "deep_fried": r"\bdeep[- ]fried\b",
+    "air_fried": r"\bair[- ]fried\b",
+    "braised": r"\b(?:braised|braising|braise)\b",
+    "poached": r"\b(?:poached|poaching|poach)\b",
+    "smoked": r"\b(?:smoked|smoking|smoke)\b",
+    "microwaved": r"\b(?:microwaved|microwaving|microwave)\b",
+    "pressure_cooked": r"\bpressure[- ]cooked\b",
+    "toasted": r"\b(?:toasted|toasting|toast)\b",
+    "broiled": r"\b(?:broiled|broiling|broil)\b",
+    "blanched": r"\b(?:blanched|blanching|blanch)\b",
+}
+_ATTRIBUTE_PATTERNS = {
+    **{key: pattern for key, pattern in _QUALIFIERS.items() if key not in _METHOD_PATTERNS},
+    "peeled": r"\bpeeled\b",
+    "unpeeled": r"\bunpeeled\b",
+    "drained": r"\bdrained\b",
+    "undrained": r"\bundrained\b",
+    "without_sauce": r"\b(?:without sauce|no sauce)\b",
+    "with_sauce": r"\bwith sauce\b",
+}
+_PREPARATION_CONTINUATION = _SOURCE_CONTINUATION | frozenset(
+    "i we later subsequently then served ate eaten eat had pan deep air pressure "
+    "braised braising braise poached poaching poach smoked smoking smoke microwaved "
+    "microwaving microwave toasted toasting toast broiled broiling broil blanched "
+    "blanching blanch drained undrained possibly uncertain unsure cooked cook".split()
+)
+
+
+def _preparation_prefix(source: str, offset: int) -> str:
+    """Certainty belongs to this descriptor, never an earlier mass or method."""
+    start = next((left for left, right, _ in _source_parts(source) if left <= offset < right), 0)
+    prefix = source[start:offset]
+    previous = [match.end() for match in _CAPTION_MASS.finditer(prefix)]
+    for pattern in (_METHOD_PATTERNS | _ATTRIBUTE_PATTERNS).values():
+        previous.extend(match.end() for match in re.finditer(pattern, prefix, re.I))
+    return prefix[max(previous, default=0) :]
+
+
+def _preparation_ambiguous(source: str) -> bool:
+    before = re.search(r"\b(?:before cooking|weighed raw|dry weight)\b", source, re.I)
+    after = re.search(r"\b(?:after cooking|weighed cooked)\b", source, re.I)
+    if before and after:
+        return True
+    found = {
+        key for key, pattern in _ATTRIBUTE_PATTERNS.items() if re.search(pattern, source, re.I)
+    }
+    for negative, positive in (("unenriched", "enriched"), ("unfortified", "fortified")):
+        if negative in found:
+            found.discard(positive)
+    if any(
+        first in found and second in found
+        for first, second in (
+            ("skinless", "with_skin"),
+            ("boneless", "bone_in"),
+            ("without_oil", "with_oil"),
+            ("unsalted", "salted"),
+            ("peeled", "unpeeled"),
+            ("drained", "undrained"),
+            ("without_sauce", "with_sauce"),
+        )
+    ):
+        return True
+    for key in found:
+        for match in re.finditer(_ATTRIBUTE_PATTERNS[key], source, re.I):
+            prefix = _preparation_prefix(source, match.start())
+            if re.search(
+                r"\b(?:not|never|possibly|maybe|perhaps|might|may|unsure|unknown)\b", prefix, re.I
+            ):
+                return True
+    return False
+
+
+def _preparation_source(
+    text: str, evidence: str | None, food_words: tuple[frozenset[str], ...]
+) -> str | None:
+    """Bind notes to one food clause and only food-free preparation continuations.
+
+    A broad model quotation spanning other foods cannot lend their preparation.
+    Unknown prose and any additional amount stop a continuation.
+    """
+    parts = _source_parts(text)
+    if evidence is not None:
+        start = text.find(evidence)
+        if start < 0 or text.find(evidence, start + 1) >= 0:
+            return None
+        end = start + len(evidence)
+        matching = [
+            index
+            for index, (left, right, part) in enumerate(parts)
+            if left < end and right > start and _names_food(part, food_words)
+        ]
+    else:
+        matching = [
+            index for index, (_, _, part) in enumerate(parts) if _names_food(part, food_words)
+        ]
+    if len(matching) != 1:
+        return None
+    first = last = matching[0]
+
+    def continuation(part: str) -> bool:
+        words = set(re.findall(r"[^\W_]+", part.casefold()))
+        return (
+            (bool(words) or not part.strip())
+            and words.issubset(_PREPARATION_CONTINUATION)
+            and not _CAPTION_MASS.search(part)
+        )
+
+    while first > 0 and continuation(parts[first - 1][2]):
+        # A preparation-only prefix is attached by punctuation, never a meal's
+        # preceding food introduced by an ordinary 'and/then/with' connector.
+        separator = text[parts[first - 1][1] : parts[first][0]]
+        if separator.strip() not in {",", ".", ";", ""}:
+            break
+        first -= 1
+    while last + 1 < len(parts) and continuation(parts[last + 1][2]):
+        last += 1
+    return text[parts[first][0] : parts[last][1]]
+
+
+def _reported_preparation(
+    text: str, evidence: str | None, food_name: str, aliases: tuple[str, ...] = ()
+) -> PreparationDetails | None:
+    source = _preparation_source(text, evidence, _food_words(food_name, aliases))
+    if source is None or _preparation_ambiguous(source):
+        return None
+    weight_basis: Literal["before_cooking", "after_cooking"] | None = None
+    if re.search(r"\b(?:before cooking|weighed raw|dry weight)\b", source, re.IGNORECASE):
+        weight_basis = "before_cooking"
+    elif re.search(r"\b(?:after cooking|weighed cooked)\b", source, re.IGNORECASE):
+        weight_basis = "after_cooking"
+    elif (
+        re.search(r"\b(?:raw|uncooked|dry)\b", source, re.I)
+        and re.search(r"\b(?:weighed|measured|weight)\b", source, re.I)
+        and _CAPTION_MASS.search(source)
+    ):
+        weight_basis = "before_cooking"
+    found_methods = []
+    for method, pattern in _METHOD_PATTERNS.items():
+        for match in re.finditer(pattern, source, re.IGNORECASE):
+            preceding = _preparation_prefix(source, match.start())
+            certainty = (
+                "possible"
+                if re.search(
+                    r"\b(?:maybe|possibly|perhaps|might|may|unsure|unknown|not sure)\b",
+                    preceding,
+                    re.I,
+                )
+                else "excluded"
+                if re.search(r"\b(?:not|never|wasn't|was not)\b", preceding, re.I)
+                else "reported"
+            )
+            value = ReportedCookingMethod(method=cast(CookingMethod, method), certainty=certainty)
+            found_methods.append((match.start(), value))
+    methods = list(
+        dict.fromkeys(value for _, value in sorted(found_methods, key=lambda value: value[0]))
+    )
+    # More specific forms already say fried; avoid a duplicate generic label.
+    if any(value.method in {"pan_fried", "deep_fried", "air_fried"} for value in methods):
+        methods = [value for value in methods if value.method != "fried"]
+    attributes = {
+        key for key, pattern in _ATTRIBUTE_PATTERNS.items() if re.search(pattern, source, re.I)
+    }
+    for negative, positive in (("unenriched", "enriched"), ("unfortified", "fortified")):
+        if negative in attributes:
+            attributes.discard(positive)
+    if weight_basis is None and not methods and not attributes:
+        return None
+    return PreparationDetails(
+        weight_basis=weight_basis,
+        methods=tuple(methods),
+        attributes=tuple(cast(PreparationAttribute, value) for value in sorted(attributes)),
+    )
+
+
+def _preparation_matches(evidence: str | None, text: str, food: AiCatalogItem) -> bool:
+    # A legacy response without its food span is checked against clauses naming
+    # that food. New responses cannot discard the original enclosing preparation.
+    if evidence is not None and evidence not in text:
+        return False
+    food_words = _food_words(food.name, food.aliases)
+    source = _source_context(text, evidence, food_words)
+    if source is None or not _names_food(source, food_words):
+        return False
+    preparation_source = _preparation_source(text, evidence, food_words)
+    if preparation_source is None or _preparation_ambiguous(preparation_source):
+        return False
+    if _preparation_ambiguous(source):
+        return False
+    # A clearly measured raw ingredient can subsequently be cooked. Its mass
+    # and nutrient source stay raw; the serving method is recorded separately.
+    details = _reported_preparation(text, evidence, food.name, food.aliases)
+    raw_weight_basis = (
+        food.preparation == "raw"
+        and details is not None
+        and details.weight_basis == "before_cooking"
+        and len(tuple(_CAPTION_MASS.finditer(preparation_source))) == 1
+    )
+    specified = _qualifiers(source)
+    if (
+        not raw_weight_basis
+        and details is not None
+        and any(value.certainty != "reported" for value in details.methods)
+    ):
+        return False
+    if raw_weight_basis:
+        # Only the later cooking method is independent of raw weighing. Keep
+        # every skin, salt, enrichment and added-oil catalog qualifier check.
+        specified -= _qualifiers(preparation_source) & set(_METHOD_PATTERNS)
+    if (
+        re.search(r"\b(?:raw|uncooked|before cooking|dry weight)\b", source, re.IGNORECASE)
+        and food.preparation != "raw"
+    ):
+        return False
+    if (
+        not raw_weight_basis
+        and re.search(r"\b(?:cooked|after cooking)\b", source, re.IGNORECASE)
+        and food.preparation == "raw"
+    ):
+        return False
+    return specified.issubset(_qualifiers(food.name))
+
+
+def _input_date(text: str, local_date: date) -> date | None:
+    """A model cannot invent an earlier date or resolve conflicting date instructions."""
+    dates = set()
+    try:
+        day_words = {
+            word: index
+            for index, word in enumerate(("one", "two", "three", "four", "five", "six", "seven"), 1)
+        }
+        for phrase in re.findall(r"\b([a-z]+|[0-9]+)\s+days?\s+ago\b", text, re.IGNORECASE):
+            offset = int(phrase) if phrase.isdecimal() else day_words.get(phrase.casefold(), 0)
+            if not 1 <= offset <= 7:
+                return None
+            dates.add(local_date - timedelta(days=offset))
+        for literal in _ISO_DATE.finditer(text):
+            dates.add(date.fromisoformat(literal[0]))
+        for word in re.findall(r"\b(today|yesterday|tomorrow)\b", text, re.IGNORECASE):
+            offset = {"today": 0, "yesterday": -1, "tomorrow": 1}[word.casefold()]
+            dates.add(local_date + timedelta(days=offset))
+    except (ValueError, OverflowError):
+        return None
+    if len(dates) > 1 or any(day > local_date for day in dates):
+        return None
+    return next(iter(dates)) if dates else local_date
 
 
 @dataclass
@@ -59,6 +870,8 @@ class AiService:
         evaluation_prefix: str | None = None,
         plan_adapter: ChatGPTPlanAdapter | None = None,
         evaluation_catalog: tuple[AiCatalogItem, ...] | None = None,
+        text_enabled: bool = True,
+        photo_enabled: bool = True,
     ):
         if evaluation_prefix is not None and not (
             evaluation_prefix.startswith("eval:")
@@ -74,10 +887,20 @@ class AiService:
             raise ValueError("Synthetic evaluation catalogs require an evaluation run scope.")
         self.plan_adapter = plan_adapter
         self.evaluation_catalog = evaluation_catalog
+        # Synthetic evaluation reads this immediately after a sequential invocation.
+        # It is never populated for ordinary requests or stored in the database/logs.
+        self.evaluation_raw_proposal: AiMealIntent | None = None
+        self._enabled_roles = {
+            role
+            for role, enabled in (("meal_text", text_enabled), ("meal_photo", photo_enabled))
+            if enabled
+        }
         self._disabled_route_ids: set[str] = set()
         self._lock = asyncio.Lock()
 
     def enabled_for(self, role: AiRole) -> bool:
+        if role not in self._enabled_roles:
+            return False
         if self.plan_adapter is not None:
             return self.plan_adapter.enabled_for(role)
         if self.adapter is None or self.manifest is None:
@@ -113,6 +936,7 @@ class AiService:
         local_date: date,
         photo: bytes | None = None,
     ) -> AiOutcome:
+        self.evaluation_raw_proposal = None
         created_at = time.time()
         started = time.monotonic()
         measurement = _InterpretationMetrics()
@@ -269,6 +1093,8 @@ class AiService:
             raise ValueError("The AI request key is invalid.")
         if not self.enabled_for(role):
             return AiOutcome(request_key=request_key, role=role, status="disabled")
+        if len(text.encode()) > MAX_AI_TEXT_BYTES:
+            return AiOutcome(request_key=request_key, role=role, status="unavailable")
         if self.plan_adapter is not None:
             return await self._interpret_plan(
                 request_key=request_key,
@@ -330,8 +1156,6 @@ class AiService:
 
             route = self.manifest.route(role, datetime.now(UTC).date())
             catalog = await self._catalog(text)
-            if not catalog:
-                return await self._finish(request_key, role, "clarify")
             try:
                 body = self.adapter.request_body(
                     route, text=text, catalog=catalog, local_date=local_date, photo=photo
@@ -387,11 +1211,16 @@ class AiService:
                     self._disabled_route_ids.add(route.id)
                     return await self._finish(request_key, role, "unavailable")
                 if completion.proposal is not None:
-                    known = {food.food_version_id for food in catalog}
-                    proposal = completion.proposal
-                    if proposal.local_date > local_date or any(
-                        item.food_version_id not in known for item in proposal.items
-                    ):
+                    if self.evaluation_prefix is not None:
+                        self.evaluation_raw_proposal = completion.proposal
+                    proposal = validate_proposal(
+                        completion.proposal,
+                        catalog=catalog,
+                        text=text,
+                        local_date=local_date,
+                        role=role,
+                    )
+                    if proposal is None:
                         metrics.failure_category = "schema"
                         return await self._finish(request_key, role, "unavailable")
                     outcome = AiOutcome(
@@ -445,7 +1274,8 @@ class AiService:
                     .limit(1)
                 ):
                     return AiOutcome(request_key=request_key, role=role, status="unknown")
-                day = datetime.now(UTC).date().isoformat()
+                utc_day = datetime.now(UTC).date()
+                day = utc_day.isoformat()
                 evaluation_pool = self.evaluation_prefix is not None
                 is_evaluation = sa.func.substr(ai_plan_invocations.c.request_key, 1, 5) == "eval:"
                 count = int(
@@ -460,7 +1290,7 @@ class AiService:
                     or 0
                 )
                 limit = (
-                    self.plan_adapter.policy.daily_evaluation_invocation_limit
+                    self.plan_adapter.policy.effective_evaluation_limit(utc_day)
                     if evaluation_pool
                     else self.plan_adapter.policy.daily_invocation_limit
                 )
@@ -472,8 +1302,6 @@ class AiService:
                     )
                 )
             catalog = await self._catalog(text)
-            if not catalog:
-                return await self._finish(request_key, role, "unavailable")
             try:
                 body = self.plan_adapter.request_body(
                     role=role, text=text, catalog=catalog, local_date=local_date, photo=photo
@@ -491,7 +1319,7 @@ class AiService:
                 if measurement is not None:
                     measurement.calls.append(metrics)
                 async with asyncio.timeout(30):
-                    proposal = await self.plan_adapter.complete(
+                    completion = await self.plan_adapter.complete(
                         role=role, body=body, metrics=metrics
                     )
             except (AiUnavailable, TimeoutError):
@@ -504,17 +1332,25 @@ class AiService:
                         .values(state="unknown", completed_at=time.time())
                     )
                 return await self._finish(request_key, role, "unavailable")
-            known = {food.food_version_id for food in catalog}
-            valid = proposal.local_date <= local_date and all(
-                item.food_version_id in known for item in proposal.items
+            if self.evaluation_prefix is not None:
+                self.evaluation_raw_proposal = completion
+            proposal = validate_proposal(
+                completion,
+                catalog=catalog,
+                text=text,
+                local_date=local_date,
+                role=role,
             )
+            valid = proposal is not None
             if not valid:
                 metrics.failure_category = "schema"
             outcome = AiOutcome(
                 request_key=request_key,
                 role=role,
                 proposal=proposal if valid else None,
-                status=("ready" if proposal.intent == "meal" else "clarify")
+                status=(
+                    "ready" if proposal is not None and proposal.intent == "meal" else "clarify"
+                )
                 if valid
                 else "unavailable",
             )
@@ -546,14 +1382,112 @@ async def create_ai_draft(
     *,
     action_key: str,
     reference: datetime,
+    owner_id: int | None = None,
+    remote_enabled: bool = False,
 ) -> MealReply:
     """Root's authorized action creates an ordinary revision-bound reviewed draft."""
+    from nutrition_bot.domain.ai import quantity_basis, uncertainty_message
+
+    source_text = message.caption or message.text or ""
+    source_catalog = (
+        {
+            value.food_version_id: value.aliases
+            for value in await ai_food_context(connection, source_text)
+        }
+        if outcome.proposal is not None
+        else {}
+    )
+
+    label = (
+        {
+            "breakfast": "Breakfast",
+            "lunch": "Lunch",
+            "dinner": "Dinner",
+            "snack": "Snack",
+            "meal": "Meal",
+        }.get(outcome.proposal.label.strip().casefold(), "Meal")
+        if outcome.proposal is not None
+        else "Meal"
+    )
+    if outcome.status == "clarify" and outcome.proposal is not None:
+        proposal = outcome.proposal
+        await consume_ai_outcome(connection, outcome.request_key)
+        if proposal.discovery_items and owner_id is not None:
+            from nutrition_bot.application.food_discovery import start_ai_discovery
+
+            pending = []
+            for discovery_item in proposal.discovery_items:
+                food = (
+                    await get_food_version(connection, discovery_item.food_version_id)
+                    if discovery_item.food_version_id is not None
+                    else None
+                )
+                basis = quantity_basis(discovery_item, outcome.role)
+                pending.append(
+                    {
+                        "food_id": food.version_id if food else None,
+                        "name": food.record.name if food else discovery_item.query,
+                        "query": discovery_item.preparation.replace("_", " ")
+                        + " "
+                        + discovery_item.query,
+                        "preparation": discovery_item.preparation,
+                        "quantity": (
+                            ("about " if basis else "") + discovery_item.grams + "g"
+                            if discovery_item.grams is not None
+                            else None
+                        ),
+                        "ai_basis": basis,
+                        "preparation_details": (
+                            details.model_dump(mode="json")
+                            if (
+                                details := _reported_preparation(
+                                    message.caption or message.text or "",
+                                    discovery_item.identity_evidence,
+                                    food.record.name if food else discovery_item.query,
+                                    source_catalog.get(food.version_id, ()) if food else (),
+                                )
+                            )
+                            is not None
+                            else None
+                        ),
+                    }
+                )
+            return await start_ai_discovery(
+                connection,
+                pending,
+                message,
+                action_key=action_key,
+                reference=reference,
+                owner_id=owner_id,
+                remote_enabled=remote_enabled,
+                local_date=proposal.local_date,
+                label=label,
+                request_key=outcome.request_key,
+            )
+        date_unclear = proposal.unresolved == (_INVALID_DATE_NOTE,)
+        return MealReply(
+            "AI proposal needs clarification · "
+            + ("date unresolved" if date_unclear else str(proposal.local_date))
+            + f" · {label}\n"
+            + (
+                _INVALID_DATE_NOTE
+                if date_unclear
+                else uncertainty_message(proposal.clarification_reason)
+            )
+            + "\nSend a complete description with those details, or enter the meal manually. "
+            "Nothing has been saved.",
+            "ai_status",
+            ui_buttons=(("Enter meal manually", "log"),),
+        )
     if outcome.status != "ready" or outcome.proposal is None:
         await consume_ai_outcome(connection, outcome.request_key)
-        return MealReply(outcome.manual_message, "ai_status")
+        return MealReply(
+            outcome.manual_message,
+            "ai_status",
+            ui_buttons=(("Enter meal manually", "log"),),
+        )
     proposal = outcome.proposal
     planned = []
-    origin = "photo estimate" if outcome.role == "meal_photo" else "text interpretation"
     for item in proposal.items:
         food = await get_food_version(connection, item.food_version_id)
         if food.record.preparation == "unspecified":
@@ -565,21 +1499,18 @@ async def create_ai_draft(
                 edible_milligrams=mass,
                 original_quantity=item.grams,
                 original_unit="g" if item.grams is not None else None,
-                # Model prose can conceal nutrient claims. Persist only the
-                # locally defined origin alongside the explicitly reviewed mass.
-                estimate_basis=f"AI {origin}; review food, preparation and amount."
-                if mass is not None
-                else None,
+                # Only fixed local provenance text survives model interpretation.
+                estimate_basis=quantity_basis(item, outcome.role),
+                preparation_details=_reported_preparation(
+                    message.caption or message.text or "",
+                    item.identity_evidence,
+                    food.record.name,
+                    source_catalog.get(food.version_id, ()),
+                ),
             )
         )
     content = DraftContent(
-        label={
-            "breakfast": "Breakfast",
-            "lunch": "Lunch",
-            "dinner": "Dinner",
-            "snack": "Snack",
-            "meal": "Meal",
-        }.get(proposal.label.strip().casefold(), "Meal"),
+        label=label,
         local_date=proposal.local_date,
         timezone=str(reference.tzinfo),
         consumed_at=_date_timestamp(proposal.local_date, reference),

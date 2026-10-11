@@ -1,6 +1,6 @@
 # Meal drafts and explicit estimate approval
 
-T04.1 is implemented and deployed. It extends the measured diary with persistent quantity drafts, conservative local portion suggestions, correction drafts and exact-revision Telegram approval. No AI, external food request, or paid API is needed. Container verification has passed; full real-device acceptance of this newer flow remains pending.
+Local quantity drafts are implemented. They extend the measured diary with persistent proposals, conservative local portion suggestions, correction drafts and exact-revision Telegram approval. The local workflow needs no AI or paid API. Optional AI meal text and photo routes use the same draft lifecycle with an additional mandatory review; see the [AI user guide](ai-user-guide.md). Each AI route is activated separately after its privacy and quality checks.
 
 ## Logging with uncertain quantities
 
@@ -13,7 +13,7 @@ I ate about 150g rice and 200g chicken
 rice
 ```
 
-The examples use hypothetical saved names/version numbers. Recognized approximation prefixes are `about`, `around`, `approximately`, `approx`, `roughly`, `estimated`, and `~`. Supported masses are g, kg and mg. Counts, volumes, ranges, unknown foods and unsupported qualifiers are not silently interpreted. [Favorites and repeats](meal-reuse.md) create fresh drafts whenever any reused portion is estimated. More flexible AI parsing and photos remain separate features.
+The examples use hypothetical saved names/version numbers. Recognized approximation prefixes are `about`, `around`, `approximately`, `approx`, `roughly`, `estimated`, and `~`. Supported masses are g, kg and mg. Counts, volumes, ranges, unknown foods and unsupported qualifiers are not silently interpreted. [Favorites and repeats](meal-reuse.md) create fresh drafts whenever any reused portion is estimated. Every AI-origin meal or favorite also requires a fresh review draft when reused, including after its portions have been edited into measured amounts. Flexible AI text and captioned meal photos are optional, independently gated routes.
 
 The bot displays a draft reference such as `D1r1`, date, food/preparation/version, proposed amount and basis for each estimate. Measured entries are labelled separately. It offers **Enter amount**, **Approve estimate**, and **Cancel**. Drafts contribute nothing to totals.
 
@@ -39,7 +39,7 @@ Reply to the draft receipt:
 | `date yesterday` | Moves the proposed meal date and invalidates old approvals |
 | `cancel` | Discards the draft without changing saved meals |
 
-For a one-item draft, `120g` is sufficient. If every item has a user-supplied measured amount, the bot saves it immediately. Resolving one item never approves estimates on other items. Words such as `yes`, `ok`, `approve` or `save` cannot approve an estimate; the button tap is required.
+For a one-item draft, `120g` is sufficient. If every item in a local quantity draft has a user-supplied measured amount, the bot saves it immediately. AI proposals always retain their visible AI marker and require **Approve draft** on the current complete preview, even after measured edits. Resolving one item never approves estimates on other items. Words such as `yes`, `ok`, `approve` or `save` cannot approve a draft; the button tap is required.
 
 `/drafts` lists up to ten open drafts without extending their activity deadline. `/draft D1` reopens one. An explicit edit needs its current revision, for example `/draft D1r2 item 1: 120g`; `/cancel D1r2` cancels it. Old receipts/buttons show the current draft or its terminal state and never apply a stale change. Editing the original Telegram message displays the current draft without silently changing it. Normal query commands such as `/today` still work when sent as a reply to a draft.
 

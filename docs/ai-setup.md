@@ -6,6 +6,12 @@ three days of ordinary use.
 
 Local measured logging, favorites, recipes and reports continue to work without an AI provider. External interpretation is disabled until its own credentials and current policy configuration are present. No shared Codex credential file is read, no credits are purchased, and no paid evaluation runs in CI.
 
+`AI_TEXT_ENABLED` and `AI_PHOTO_ENABLED` are independent runtime gates and both
+default to `false`. Selecting `LLM_PROVIDER=chatgpt` or `openrouter` does not
+enable either feature. Set each flag only after its own quality and privacy
+review. `/status` shows each route separately. A disabled or failed subscription
+route never silently switches to OpenRouter.
+
 AI interprets unfamiliar meal wording or one meal photo into a proposal using reviewed local food identities. Unknown foods, preparation ambiguity and unaccounted-for ingredients produce clarification rather than a partial saved meal. Models cannot return nutrient values, database queries or executable actions. Authoritative nutrition still comes from immutable reviewed food versions and deterministic calculations. Every AI proposal requires the current displayed draft's approval button, including after quantities are edited into measured amounts. Old buttons and text replies cannot approve a new revision.
 
 ## ChatGPT plan sign-in
@@ -56,6 +62,29 @@ from the other pool. Existing invocation history is preserved when upgrading,
 including earlier validation calls. If a pool already has 100 attempts today,
 it remains exhausted until the next UTC day.
 
+A separately authorized evaluation supplement can be configured for exactly one
+UTC day using paired `extra_evaluation_date` and
+`extra_evaluation_invocation_limit` fields. The cumulative extra count is bounded at350;
+it changes only that day's evaluation cap, leaves the bot and base evaluation
+caps unchanged, and expires automatically on every other UTC date. For example,
+this synthetic private-policy fragment grants200 extra attempts on its stated
+day:
+
+```json
+{
+  "extra_evaluation_date": "2026-01-15",
+  "extra_evaluation_invocation_limit": 200
+}
+```
+
+Use it only for explicitly authorized supplements. When an additional supplement
+is authorized for the same day, add it to the already authorized extra count;
+do not replace existing usage or reset its ledger. Existing completed, failed
+and unknown attempts remain counted; changing the policy does not reset usage or
+authorize retrying an unknown invocation. Read-only cap reporting uses the same
+frozen UTC day for the effective limit and usage window. A dated supplement is
+separate from provider availability and never authorizes paid API evaluation.
+
 These are application limits, not separate OpenAI account quotas or guaranteed
 provider capacity. Both pools still use the same selected ChatGPT account and
 share that account's actual provider limits. An account-level limit can block
@@ -88,7 +117,22 @@ Before each attempt, reserve its conservative maximum in integer micro-USD. Shar
 
 ## Photos and retention
 
-Send one Telegram meal photo outside an album. Downloads and actual bytes are bounded to 2 MB, JPEG/PNG and 1600 pixels per side. The image is sent only to an activated route and remains in memory during interpretation; this increment does not archive local raw photo copies. A photograph never creates authoritative nutrient data or proves a weighed portion. Unresolved portions remain unresolved; visible portions are proposals for explicit review.
+Send one Telegram meal photo outside an album. Downloads and actual bytes are
+bounded to 2 MB, JPEG/PNG and 1600 pixels per side. The image is sent only to an
+activated route and remains in memory during interpretation; local raw photo
+copies are not archived. Include food names and preparation in the caption so
+only relevant reviewed catalog identities are sent. Without usable caption
+context, the app asks for manual details before inference. This release does
+not perform a second model call to retrieve an image-only catalog.
+
+A photograph cannot establish edible grams. Numeric quantities must match a
+verbatim portion statement in the input naming that food. Approximate statements
+remain estimates; absent quantities stay unresolved. Visual guesses and
+unsupported conversions from counts, cups, skin or bone weight are discarded.
+Identity/preparation ambiguity and unaccounted ingredients require clarification.
+An unknown identity can continue through the existing discovery/review workflow
+with the complete proposed meal and its date retained. Source review and the
+latest meal proposal approval remain separate steps.
 
 Displayed and saved draft provenance uses fixed application wording; model-written labels are limited to canonical meal names and model-written explanation prose is discarded, so nutrient claims cannot hide in those fields. AI accounting stores no prompts, raw model responses or photo bytes. Temporary structured outcomes are consumed in the same transaction that creates a draft or processes a rejection; crash-left outcomes are purged after seven days. Existing inbox/draft retention also applies. Historical accounting retains only minimal request IDs, route IDs, attempt status, timestamps and costs. This does not govern Telegram or provider copies.
 
@@ -96,23 +140,34 @@ Before a sole worker starts, `AiService.recover_abandoned()` marks interrupted r
 
 ## Synthetic evaluation
 
-Mocked contract tests run offline in CI. A separate opt-in runner accepts only explicitly marked synthetic cases; it neither saves meals nor approves drafts. Input files supply synthetic catalogs and expected typed intents, never real meal history. Without `--live`, it only validates the fixture file and makes zero external requests. `--role meal_text` or `--role meal_photo` selects one group. Summary accuracy compares intent, exact food-version IDs, integer milligrams, the specified/context local date and known canonical meal labels. Numerically equivalent gram spellings are accepted without relaxing the quantity threshold.
+The implemented opt-in runner validates synthetic fixture files without external
+calls unless `--live` is supplied. The current representative suites and explicit
+per-route thresholds are in [the evaluation guide](../evals/README.md): 54 text
+cases and 20 photo cases using ten distinct generated, visually reviewed images.
+The older blank-photo refusals remain regression seeds and cannot activate vision.
 
 ```sh
 uv run python -m nutrition_bot.application.ai_evaluation \
-  --cases evals/ai_meal_cases.jsonl --run-id synthetic-review
+  --cases evals/ai_meal_review_cases.jsonl --run-id synthetic-review
 ```
 
-The additional 17 mixed-food text cases in `evals/ai_text_mixed_cases.jsonl` cover raw/cooked alternatives, multiple items, decimal weights, missing portions and hostile instructions. Keep strict expectation mismatches visible; explicitly unresolved gram quantities may satisfy uncertainty preservation only after reviewing the exact proposed identities and known amounts. Passing the clear-input percentage alone does not pass the ambiguity gate.
+Candidate comparisons can select `--split development` and `--max-cases N`;
+held-out cases remain for the final unchanged full suite. A live run additionally
+requires `--live`, an owner-only private `--report` path, and either the app-owned
+`--chatgpt-credentials`/`--chatgpt-policy` pair or an explicitly authorized
+OpenRouter `--manifest` and dedicated environment key. The runner preserves
+per-case results and resumes the same snapshot/configuration without repeat
+inference. It uses the existing migrated durable accounting database and never
+saves meals or approves drafts. Quota, budget, disabled and unknown outcomes stop
+the bounded run and remain failures in its report.
 
-A live run additionally needs `--live` and either `--manifest` plus the dedicated
-key in its environment, or `--chatgpt-credentials` and `--chatgpt-policy`. It uses
-the existing application's migrated accounting database. Every OpenRouter
-attempt counts against both the shared monthly budget and a persistent maximum
-of $1 for that evaluation run identifier. ChatGPT evaluations count against the
-daily **validation** pool, including diagnostic calls and failed/unknown
-attempts. They do not reduce the application's bot-use allowance, but still
-share the ChatGPT account's provider limits. No live evaluation or endpoint
-promotion is implied by passing mocked tests; representative text and image
-accuracy must be reviewed before activating real inputs. Separating the pools
-does not pass an evaluation gate or turn AI on.
+Each OpenRouter attempt counts against the shared monthly budget and a persistent
+maximum of $1 for that evaluation run identifier; this engineering ceiling is
+not authorization for paid evaluation. ChatGPT evaluations count against the
+same account's daily validation pool, including failed and unknown attempts.
+Reports show separate role quality gates and separate raw typed model versus
+normalized application scores for catalog/quantity/date extraction, completeness,
+uncertainty and clarification/discovery, plus latency and known/unknown usage.
+Application clamping cannot give the model credit for invented grams or lost
+uncertainty. Raw typed proposals exist only transiently in the evaluation service
+and in the owner-only synthetic report; production metrics never retain them. Passing mocked tests or an incomplete pilot does not activate either route.

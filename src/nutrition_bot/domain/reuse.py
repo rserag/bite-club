@@ -25,6 +25,7 @@ class FavoriteSnapshot(FrozenModel):
     name: str = Field(min_length=1, max_length=60)
     items: tuple[PlannedItem, ...] = Field(min_length=1, max_length=10)
     archived: bool
+    review_required: bool = False
 
 
 def favorite_display_name(name: str) -> str:
@@ -70,6 +71,7 @@ def planned_from_meal(meal: "MealSnapshot") -> tuple[PlannedItem, ...]:
         return tuple(
             PlannedItem(
                 recipe_share=item.recipe_share,
+                preparation_details=item.preparation_details,
                 food_version_id=item.food_version_id,
                 edible_milligrams=item.edible_milligrams,
                 original_quantity=format(milligrams_to_grams(item.edible_milligrams), "f"),
@@ -132,6 +134,7 @@ def scale_items(items: tuple[PlannedItem, ...], factor: Decimal) -> tuple[Planne
                 original_quantity=format(milligrams_to_grams(mass), "f"),
                 original_unit="g",
                 estimate_basis=item.estimate_basis,
+                preparation_details=item.preparation_details,
             )
         )
     return tuple(result)

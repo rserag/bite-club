@@ -456,7 +456,7 @@ async def test_exhausted_and_over_limit_pools_report_without_reset_or_borrowing(
         {"bot_daily_limit": 101},
         {"bot_daily_limit": True},
         {"evaluation_daily_limit": -1},
-        {"evaluation_daily_limit": 101},
+        {"evaluation_daily_limit": 301},
         {"evaluation_daily_limit": False},
         {"evaluation_daily_limit": 1.5},
     ],
@@ -662,6 +662,42 @@ def test_cli_metrics_invalid_selected_policy_fails_without_disclosing_content(
     output = capsys.readouterr()
     assert "DO-NOT-DISCLOSE" not in output.out + output.err + caplog.text
     assert "private account credential" not in output.out + output.err + caplog.text
+
+
+@pytest.mark.parametrize("day", ["2026-10-08", "2026-10-09", "2026-10-10"])
+def test_cli_reports_dated_supplement_for_same_frozen_utc_day(
+    migrated, monkeypatch, capsys, tmp_path, day
+):
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromisoformat(day + "T23:59:59+00:00")
+
+    policy_path = tmp_path / "synthetic-policy.json"
+    policy_path.write_text(
+        policy(
+            extra_evaluation_date="2026-10-09",
+            extra_evaluation_invocation_limit=200,
+        ).model_dump_json()
+    )
+    monkeypatch.setenv("DATABASE_URL", migrated.resolved_database_url)
+    monkeypatch.setattr("nutrition_bot.cli.datetime", FixedClock)
+    monkeypatch.setattr(
+        "sys.argv", ["nutrition-bot", "ai-metrics", "--chatgpt-policy", str(policy_path)]
+    )
+
+    def credentials_must_not_be_read(*_):
+        pytest.fail("cap reporting must not read credentials or call a provider")
+
+    monkeypatch.setattr(
+        "nutrition_bot.adapters.ai.chatgpt_auth.load_credentials", credentials_must_not_be_read
+    )
+    main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["current_day_invocations"]["day"] == day
+    pools = report["current_day_invocations"]["pools"]
+    assert pools["bot"]["limit"] == 100
+    assert pools["evaluation"]["limit"] == (300 if day == "2026-10-09" else 100)
 
 
 def test_metrics_migration_upgrade_from_previous_schema_and_downgrade(settings):

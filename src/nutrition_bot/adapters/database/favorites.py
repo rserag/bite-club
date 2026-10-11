@@ -5,6 +5,7 @@ import time
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from nutrition_bot.adapters.database.drafts import meal_requires_ai_review
 from nutrition_bot.adapters.database.meals import MealError, MealSnapshot, get_meal
 from nutrition_bot.adapters.database.schema import actions
 from nutrition_bot.adapters.database.schema_favorites import (
@@ -12,6 +13,7 @@ from nutrition_bot.adapters.database.schema_favorites import (
     favorite_versions,
     favorites,
 )
+from nutrition_bot.adapters.database.schema_preparation import favorite_preparation_details
 from nutrition_bot.domain.drafts import PlannedItem
 from nutrition_bot.domain.food import MAX_INTEGER, milligrams_to_grams
 from nutrition_bot.domain.reuse import (
@@ -60,8 +62,9 @@ async def _version(
     row = (
         (
             await connection.execute(
-                sa.select(favorites.c.name, favorite_versions)
+                sa.select(favorites.c.name, favorite_versions, actions.c.kind.label("review_kind"))
                 .join(favorite_versions, favorite_versions.c.favorite_id == favorites.c.id)
+                .join(actions, actions.c.key == favorite_versions.c.action_key)
                 .where(
                     favorites.c.id == favorite_id,
                     favorite_versions.c.id == version_id,
@@ -83,12 +86,25 @@ async def _version(
         .mappings()
         .all()
     )
+    preparation_rows = (
+        (
+            await connection.execute(
+                sa.select(favorite_preparation_details).where(
+                    favorite_preparation_details.c.version_id == version_id
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    preparation = {item["item_index"]: item["details"] for item in preparation_rows}
     return FavoriteSnapshot(
         id=favorite_id,
         version_id=version_id,
         version_number=row["version_number"],
         name=row["name"],
         archived=row["archived"],
+        review_required=row["review_kind"] == "ai_favorite_view",
         items=tuple(
             PlannedItem(
                 recipe_share=item["recipe_share"],
@@ -97,6 +113,7 @@ async def _version(
                 original_quantity=format(milligrams_to_grams(item["edible_milligrams"]), "f"),
                 original_unit="g",
                 estimate_basis=item["estimate_basis"],
+                preparation_details=preparation.get(item["item_index"]),
             )
             for item in item_rows
         ),
@@ -190,6 +207,15 @@ async def _publish(
             for index, item in enumerate(items)
         ],
     )
+    for index, item in enumerate(items):
+        if item.preparation_details is not None:
+            await connection.execute(
+                sa.insert(favorite_preparation_details).values(
+                    version_id=version_id,
+                    item_index=index,
+                    details=item.preparation_details.model_dump(mode="json"),
+                )
+            )
     await connection.execute(
         sa.update(favorite_versions).where(favorite_versions.c.id == version_id).values(sealed=True)
     )
@@ -217,6 +243,10 @@ async def create_favorite(
         )
     current = await _current_meal(connection, meal)
     items = planned_from_meal(current)
+    if await meal_requires_ai_review(connection, current.id):
+        await connection.execute(
+            sa.update(actions).where(actions.c.key == action_key).values(kind="ai_favorite_view")
+        )
     favorite_id = (
         await connection.execute(
             sa.insert(favorites)
@@ -255,6 +285,13 @@ async def revise_favorite(
         raise ReuseError("Choose a replacement meal, Archive, or Restore.")
     await _validate_action(connection, action_key)
     items = planned_from_meal(await _current_meal(connection, meal)) if meal else current.items
+    needs_review = (
+        await meal_requires_ai_review(connection, meal.id) if meal else current.review_required
+    )
+    if needs_review:
+        await connection.execute(
+            sa.update(actions).where(actions.c.key == action_key).values(kind="ai_favorite_view")
+        )
     return await _publish(
         connection,
         favorite_id=favorite_id,

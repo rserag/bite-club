@@ -46,6 +46,17 @@ Host controllers and Compose are deliberately not overwritten by releases.
 Changes to them require separate operator installation after review. This keeps
 the restricted deployment key from granting general root code execution.
 
+For an explicitly authorized private release that must not publish source or an
+image, an operator can build and smoke-test an amd64 image, transfer it over SSH
+with `docker save`/`docker load`, and verify its immutable `sha256` image ID and
+content-derived source revision label. After separately reviewing/installing
+the controller, root may invoke `bite-club-deploy --local-release REVISION IMAGE_ID`.
+The local path uses the same stopped-volume snapshot, isolated restore/migration
+rehearsal and health gates. It does not pull or publish an image. The restricted
+SSH identity can invoke only `--request`, which continues to reject local image
+IDs; its sudo permissions must not be broadened. Current/previous records accept
+both immutable formats so the next published release and rollback remain usable.
+
 ## Upgrade and recovery
 
 The controller serializes operations, validates image provenance labels, pulls

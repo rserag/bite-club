@@ -10,7 +10,12 @@ import pytest
 from nutrition_bot.adapters.ai.chatgpt_auth import save_credentials
 from nutrition_bot.adapters.ai.chatgpt_plan import ChatGPTPlanAdapter
 from nutrition_bot.adapters.ai.openrouter import AiTransportError
-from nutrition_bot.domain.ai import AiCallMetrics, AiUnavailable, known_token_count
+from nutrition_bot.domain.ai import (
+    AI_PROMPT_VERSION,
+    AiCallMetrics,
+    AiUnavailable,
+    known_token_count,
+)
 from tests.test_ai_drafts import adapter_with, completion, proposed, reviewed_route
 from tests.test_chatgpt_plan_ai import credentials, policy, private_path, stream
 
@@ -49,8 +54,8 @@ async def test_plan_completed_usage_and_stages_are_content_free(tmp_path):
     result = await plan_result(tmp_path, stream(usage=usage()), metrics)
     assert result.intent == "meal"
     assert metrics.model == "synthetic-model-v1"
-    assert metrics.prompt_version == "meal-extraction-v2"
-    assert metrics.schema_version == "meal-proposal-v1"
+    assert metrics.prompt_version == AI_PROMPT_VERSION
+    assert metrics.schema_version == "meal-proposal-v4"
     assert metrics.reasoning_effort == "default"
     assert metrics.inference_sent and metrics.failure_category is None
     assert (

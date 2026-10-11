@@ -3,6 +3,7 @@
 import re
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -15,6 +16,7 @@ from nutrition_bot.adapters.database.drafts import (
     close_draft,
     create_draft,
     get_draft,
+    meal_requires_ai_review,
     revise_draft,
     touch_draft,
     track_draft_action,
@@ -38,7 +40,15 @@ from nutrition_bot.application.meal_conversation import (
 )
 from nutrition_bot.application.portion_suggestions import suggest_portion
 from nutrition_bot.application.recipe_display import portion_mass, share_lines
-from nutrition_bot.domain.drafts import DraftContent, DraftError, MealDraft, PlannedItem
+from nutrition_bot.domain.drafts import (
+    DraftContent,
+    DraftError,
+    MealDraft,
+    PlannedItem,
+    PreparationDetails,
+    ReportedCookingMethod,
+    preparation_description,
+)
 from nutrition_bot.domain.food import MAX_INTEGER, grams_to_milligrams, milligrams_to_grams
 from nutrition_bot.domain.meal_draft_text import ParsedDraftMeal, parse_draft_meal
 from nutrition_bot.domain.meal_text import MealTextError, MeasuredFood, ParsedMeal
@@ -103,6 +113,8 @@ async def draft_receipt(
             text += f" Open its receipt with /meal M{draft.saved_meal_id}."
         return MealReply(text, "draft_status")
     content = draft.content
+    if content.review_required and "AI proposal" not in lead:
+        lead += " · AI proposal — review every item"
     lines = [
         f"{lead} D{draft.id}r{draft.revision} · {content.local_date} · {_short(content.label, 40)}"
     ]
@@ -133,6 +145,8 @@ async def draft_receipt(
         )
         if item.estimate_basis:
             lines.append("   Basis: " + " ".join(item.estimate_basis.split()))
+        if preparation := preparation_description(item.preparation_details):
+            lines.append("   Reported preparation: " + preparation)
     unresolved = any(item.edible_milligrams is None for item in content.items)
     lines.append(
         "Not in your totals. Review the food choices and quantities, then tap Approve draft."
@@ -140,15 +154,28 @@ async def draft_receipt(
         else "Not in your totals. No food is saved until the quantities are resolved "
         "or you tap Approve estimate."
     )
+    if content.review_required:
+        lines.append(
+            "AI food identities and preparation are proposals. Check every ingredient, "
+            "including oil or sauce; amounts without evidence remain unknown."
+        )
     if unresolved:
         lines.append("An amount is still missing, so this draft cannot be approved yet.")
+    if any(item.preparation_details for item in content.items):
+        lines.append(
+            "Correct reported cooking with 'item 1: preparation boiled', "
+            "or remove the note with 'item 1: preparation clear'."
+        )
     if any(item.recipe_share for item in content.items):
         lines.append(
             "Change with 'portion 250g' (or servings). Recipe ingredient/yield estimates "
             "still require approval; update the recipe to change those assumptions."
         )
     else:
-        lines.append("Reply 'item 1: 150g' with a measured amount.")
+        lines.append(
+            "Reply 'item 1: 150g' with a measured amount, or 'item 1: 150g #32' "
+            "to change its reviewed food version."
+        )
     lines.append(
         "You can also reply 'replace: ...', 'date yesterday', or 'cancel'. "
         "Text such as 'yes' never approves estimates."
@@ -243,7 +270,43 @@ async def _changed_items(
         else:
             raise MealError("Choose an item, e.g. 'item 1: 150g', or use 'replace: ...'.")
     updated = list(items)
-    if body.casefold() == "delete":
+    if body.casefold().startswith("preparation "):
+        requested = body[len("preparation ") :].strip().casefold()
+        if requested == "clear":
+            details = None
+        else:
+            try:
+                methods = tuple(
+                    ReportedCookingMethod.model_validate(
+                        {"method": value.strip().replace(" ", "_")}
+                    )
+                    for value in requested.split(",")
+                )
+                previous_details = items[index].preparation_details
+                details = PreparationDetails.model_validate(
+                    (previous_details.model_dump() if previous_details else {})
+                    | {"methods": methods}
+                )
+                food = await get_food_version(connection, items[index].food_version_id)
+                from nutrition_bot.application.ai_service import _qualifiers
+
+                compatible = _qualifiers(food.record.name)
+                if not (
+                    food.record.preparation == "raw" and details.weight_basis == "before_cooking"
+                ) and any(value.method not in compatible for value in details.methods):
+                    raise MealError(
+                        "Choose a reviewed food version matching that cooking method first. "
+                        "The bot cannot convert the weighed amount between raw and cooked."
+                    )
+            except ValidationError:
+                raise MealError(
+                    "Use a cooking method, e.g. 'item 1: preparation boiled' "
+                    "or 'item 1: preparation clear'."
+                ) from None
+        updated[index] = PlannedItem.model_validate(
+            items[index].model_dump() | {"preparation_details": details}
+        )
+    elif body.casefold() == "delete":
         if len(items) == 1:
             raise MealError("Use Cancel to discard this one-item draft.")
         del updated[index]
@@ -253,7 +316,12 @@ async def _changed_items(
         parsed = _correction_parse(body, today)
         if len(parsed.items) != 1:
             raise MealError("Change one item at a time, or use 'replace: ...'.")
-        updated[index] = (await _planned(connection, parsed, previous))[0]
+        changed = (await _planned(connection, parsed, previous))[0]
+        if changed.food_version_id == items[index].food_version_id:
+            changed = PlannedItem.model_validate(
+                changed.model_dump() | {"preparation_details": items[index].preparation_details}
+            )
+        updated[index] = changed
     return tuple(updated)
 
 
@@ -269,6 +337,7 @@ async def correction_draft(
     current_items = tuple(
         PlannedItem(
             recipe_share=item.recipe_share,
+            preparation_details=item.preparation_details,
             food_version_id=item.food_version_id,
             edible_milligrams=item.edible_milligrams,
             original_quantity=item.original_quantity,
@@ -290,6 +359,7 @@ async def correction_draft(
         items=updated,
         target_meal_id=meal.id,
         target_revision_id=meal.revision_id,
+        review_required=await meal_requires_ai_review(connection, meal.id),
     )
     draft = await create_draft(connection, content, action_key=action_key, now=time.time())
     return await draft_receipt(connection, draft, "Correction draft")
@@ -316,6 +386,7 @@ async def _finalize(
         items.append(
             MealItemInput(
                 recipe_share=item.recipe_share,
+                preparation_details=item.preparation_details,
                 food_version_id=item.food_version_id,
                 edible_milligrams=item.edible_milligrams,
                 original_quantity=item.original_quantity,
@@ -361,7 +432,7 @@ async def _finalize(
         now=now,
         saved_meal_id=saved.id,
     )
-    return receipt(
+    result = receipt(
         saved,
         "Saved with approved estimates"
         if any(item.estimate_basis for item in content.items)
@@ -369,6 +440,7 @@ async def _finalize(
         if content.review_required
         else "Saved measured meal",
     )
+    return replace(result, kind="ai_meal_receipt") if content.review_required else result
 
 
 async def _edit(

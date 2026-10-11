@@ -14,6 +14,9 @@ RUN uv sync --frozen --no-editable
 COPY tests ./tests
 COPY scripts ./scripts
 COPY deploy ./deploy
+COPY evals ./evals
+# Public source inputs support the release-packaging checks in the test stage.
+COPY Dockerfile docker-compose.yml .dockerignore .python-version alembic.ini .env.example ./
 ENV PYTHONDONTWRITEBYTECODE=1
 CMD ["/app/.venv/bin/pytest", "-q", "-p", "no:cacheprovider"]
 

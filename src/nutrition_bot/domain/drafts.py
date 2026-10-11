@@ -14,6 +14,84 @@ from nutrition_bot.domain.recipe_portions import RecipeShare
 DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60
 Identifier = Annotated[int, Field(strict=True, ge=1, le=MAX_INTEGER)]
 DraftState = Literal["open", "saved", "cancelled", "expired"]
+CookingMethod = Literal[
+    "boiled",
+    "steamed",
+    "grilled",
+    "baked",
+    "roasted",
+    "fried",
+    "pan_fried",
+    "deep_fried",
+    "air_fried",
+    "sauteed",
+    "stewed",
+    "braised",
+    "poached",
+    "smoked",
+    "microwaved",
+    "pressure_cooked",
+    "toasted",
+    "broiled",
+    "blanched",
+]
+PreparationAttribute = Literal[
+    "skinless",
+    "with_skin",
+    "boneless",
+    "bone_in",
+    "without_oil",
+    "with_oil",
+    "unsalted",
+    "salted",
+    "unenriched",
+    "enriched",
+    "unfortified",
+    "fortified",
+    "peeled",
+    "unpeeled",
+    "drained",
+    "undrained",
+    "without_sauce",
+    "with_sauce",
+]
+
+
+class ReportedCookingMethod(FrozenModel):
+    method: CookingMethod
+    certainty: Literal["reported", "possible", "excluded"] = "reported"
+
+
+class PreparationDetails(FrozenModel):
+    """Bounded user-reported details, separate from the reviewed nutrient source."""
+
+    weight_basis: Literal["before_cooking", "after_cooking"] | None = None
+    methods: tuple[ReportedCookingMethod, ...] = Field(default=(), max_length=57)
+    attributes: tuple[PreparationAttribute, ...] = Field(default=(), max_length=20)
+
+    @model_validator(mode="after")
+    def unique_details(self) -> "PreparationDetails":
+        if len(set(self.methods)) != len(self.methods) or len(set(self.attributes)) != len(
+            self.attributes
+        ):
+            raise ValueError("Preparation details must not repeat.")
+        if not self.methods and not self.attributes and self.weight_basis is None:
+            raise ValueError("Leave absent preparation details unknown.")
+        return self
+
+
+def preparation_description(details: PreparationDetails | None) -> str | None:
+    """Only canonical local labels are displayed; never model or input prose."""
+    if details is None:
+        return None
+    labels = []
+    if details.weight_basis:
+        labels.append("weighed " + details.weight_basis.replace("_", " "))
+    for method in details.methods:
+        prefix = {"reported": "", "possible": "possibly ", "excluded": "not "}[method.certainty]
+        labels.append(prefix + method.method.replace("_", " "))
+    labels.extend(value.replace("_", " ") for value in details.attributes)
+    return "; ".join(labels)
 
 
 class DraftError(ValueError):
@@ -27,6 +105,7 @@ class PlannedItem(FrozenModel):
     original_quantity: str | None = Field(default=None, min_length=1, max_length=40)
     original_unit: str | None = Field(default=None, min_length=1, max_length=2)
     estimate_basis: str | None = Field(default=None, min_length=1, max_length=300)
+    preparation_details: PreparationDetails | None = None
 
     @model_validator(mode="after")
     def validate_quantity(self) -> "PlannedItem":

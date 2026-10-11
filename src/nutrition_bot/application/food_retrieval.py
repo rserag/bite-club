@@ -15,27 +15,37 @@ MAX_QUERY_WORDS = 64
 _NOISE = frozenset(
     "i ate had have today yesterday about roughly around approximately estimated "
     "meal breakfast lunch dinner snack and with of the a an for grams gram g kg mg "
-    "raw cooked uncooked as sold prepared please log save my this that".split()
+    "raw cooked uncooked as sold prepared please log save my this that "
+    "interpret identify photo image visible pictured meal".split()
 )
 
 
 def _query_words(text: str) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", text).casefold()
-    words = re.findall(r"[^\W_]+", normalized)
-    return tuple(
-        dict.fromkeys(word for word in words if word not in _NOISE and not word.isdecimal())
+    extracted = re.findall(r"[^\W_]+", normalized)
+    words = tuple(
+        dict.fromkeys(word for word in extracted if word not in _NOISE and not word.isdecimal())
     )[:MAX_QUERY_WORDS]
+    forms = list(words)
+    for word in words:
+        if len(word) > 4 and word.endswith("ies"):
+            forms.append(word[:-3] + "y")
+        elif len(word) > 4 and word.endswith(("oes", "ches", "shes")):
+            forms.append(word[:-2])
+        elif len(word) > 4 and word.endswith("s") and not word.endswith(("ss", "us")):
+            forms.append(word[:-1])
+    return tuple(dict.fromkeys(forms))[:MAX_QUERY_WORDS]
 
 
-def _context_name(name: str, aliases: str | None, text: str) -> str:
+def _context_aliases(aliases: str | None, text: str) -> tuple[str, ...]:
     if not aliases:
-        return name[:120]
+        return ()
     query = set(_query_words(text))
     selected = min(
         aliases.split("; "),
         key=lambda value: (-len(query.intersection(_query_words(value))), value.casefold()),
     )
-    return name[:28] + " [alias: " + selected[:80] + "]"
+    return (selected,) if query.intersection(_query_words(selected)) else ()
 
 
 async def ai_food_context(connection: AsyncConnection, text: str = "") -> tuple[AiCatalogItem, ...]:
@@ -46,6 +56,9 @@ async def ai_food_context(connection: AsyncConnection, text: str = "") -> tuple[
     every word to occur in each food. AI still has to account for the whole input
     and can only propose identifiers from this exact bounded context.
     """
+    query_words = _query_words(text)
+    if not query_words:
+        return ()
     latest = (
         sa.select(food_versions.c.food_id, sa.func.max(food_versions.c.version_number).label("v"))
         .where(food_versions.c.sealed.is_(True))
@@ -69,7 +82,7 @@ async def ai_food_context(connection: AsyncConnection, text: str = "") -> tuple[
         + sa.func.coalesce(aliases.c.names, "")
     )
     score: sa.ColumnElement[int] = sa.literal(0)
-    for word in _query_words(text):
+    for word in query_words:
         score = score + sa.case((searchable.contains(word, autoescape=True), 1), else_=0)
     statement = (
         sa.select(
@@ -84,6 +97,7 @@ async def ai_food_context(connection: AsyncConnection, text: str = "") -> tuple[
         .where(
             food_versions.c.sealed.is_(True),
             foods.c.preparation != "unspecified",
+            score > 0,
             sa.or_(
                 food_versions.c.version_number == latest.c.v,
                 aliases.c.food_version_id.is_not(None),
@@ -96,8 +110,9 @@ async def ai_food_context(connection: AsyncConnection, text: str = "") -> tuple[
     return tuple(
         AiCatalogItem(
             food_version_id=row["id"],
-            name=_context_name(row["name"], row["aliases"], text),
+            name=row["name"],
             preparation=row["preparation"],
+            aliases=_context_aliases(row["aliases"], text),
         )
         for row in rows
     )

@@ -20,6 +20,8 @@ from nutrition_bot.adapters.database.schema import (
     meal_revisions,
     meals,
 )
+from nutrition_bot.adapters.database.schema_preparation import meal_preparation_details
+from nutrition_bot.domain.drafts import PreparationDetails
 from nutrition_bot.domain.food import MAX_INTEGER, FrozenModel, Unit, exact_decimal
 from nutrition_bot.domain.food_source import SourceProvenance
 from nutrition_bot.domain.recipe_portions import RecipeError, RecipeShare
@@ -44,6 +46,7 @@ class MealItemInput:
     approval_draft_id: int | None = None
     approval_draft_revision: int | None = None
     recipe_share: RecipeShare | None = None
+    preparation_details: PreparationDetails | None = None
 
 
 class MealNutrientSnapshot(FrozenModel):
@@ -74,6 +77,7 @@ class MealItemSnapshot(FrozenModel):
     approval_draft_id: int | None = None
     approval_draft_revision: int | None = None
     recipe_share: RecipeShare | None = None
+    preparation_details: PreparationDetails | None = None
     nutrients: tuple[MealNutrientSnapshot, ...]
 
 
@@ -111,6 +115,11 @@ def _validate_fields(label: str, local_date: date, timezone: str, consumed_at: f
 
 
 def _validate_item(item: MealItemInput) -> None:
+    if item.preparation_details is not None:
+        try:
+            PreparationDetails.model_validate(item.preparation_details.model_dump())
+        except (AttributeError, ValidationError):
+            raise MealError("Choose valid reported preparation details.") from None
     if item.recipe_share is not None:
         try:
             RecipeShare.model_validate(item.recipe_share.model_dump())
@@ -180,6 +189,7 @@ def input_from_snapshot(item: MealItemSnapshot) -> MealItemInput:
         approval_draft_id=item.approval_draft_id,
         approval_draft_revision=item.approval_draft_revision,
         recipe_share=item.recipe_share,
+        preparation_details=item.preparation_details,
     )
 
 
@@ -282,6 +292,7 @@ async def _snapshot_items(
                 approval_draft_id=item.approval_draft_id,
                 approval_draft_revision=item.approval_draft_revision,
                 recipe_share=item.recipe_share,
+                preparation_details=item.preparation_details,
                 nutrients=tuple(
                     MealNutrientSnapshot(
                         code=nutrient.code,
@@ -346,6 +357,18 @@ async def _get_revision(connection: AsyncConnection, revision_id: int) -> MealSn
         .mappings()
         .all()
     )
+    preparation_rows = (
+        (
+            await connection.execute(
+                sa.select(meal_preparation_details).where(
+                    meal_preparation_details.c.revision_id == revision_id
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    preparation = {row["item_index"]: row["details"] for row in preparation_rows}
     snapshots = tuple(
         MealItemSnapshot.model_validate(
             {
@@ -364,6 +387,7 @@ async def _get_revision(connection: AsyncConnection, revision_id: int) -> MealSn
                     for value in nutrient_rows
                     if value["item_index"] == row["item_index"]
                 ),
+                "preparation_details": preparation.get(row["item_index"]),
             }
         )
         for row in item_rows
@@ -432,9 +456,17 @@ async def _publish(
                 revision_id=revision_id,
                 item_index=index,
                 recipe_version_id=item.recipe_share.version_id if item.recipe_share else None,
-                **item.model_dump(mode="json", exclude={"nutrients"}),
+                **item.model_dump(mode="json", exclude={"nutrients", "preparation_details"}),
             )
         )
+        if item.preparation_details is not None:
+            await connection.execute(
+                sa.insert(meal_preparation_details).values(
+                    revision_id=revision_id,
+                    item_index=index,
+                    details=item.preparation_details.model_dump(mode="json"),
+                )
+            )
         for nutrient in item.nutrients:
             await connection.execute(
                 sa.insert(meal_item_nutrients).values(

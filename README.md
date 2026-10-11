@@ -42,7 +42,11 @@ The demo exercises the actual application service with **synthetic food values**
 - **Daily navigation:** a short home menu, topic help, guided catalog/portion entry, recipe creation, label entry, favorite/recent shortcuts and receipt actions; short reports with detail toggles.
 - **Optional reminders:** editable timezone, quiet hours, category switches, weight/recovery prompts, training-relative reminders and daily/weekly summaries. All categories start disabled.
 - **Optional Mini App:** authenticated mobile dashboard, saved/USDA/barcode food search and review, measured meal forms, recipe portion corrections and recorded-energy charts; requires configured HTTPS ingress.
-- **Optional AI drafts:** app-owned ChatGPT plan OAuth or policy-restricted OpenRouter interpretation of meal text/photos; disabled until private setup and evaluation. Every AI proposal needs review before saving.
+- **Optional AI drafts:** local parsing first, then app-owned ChatGPT plan OAuth
+  or explicitly configured OpenRouter for meal text/photos. Text and photos have
+  separate activation gates. Unknown foods continue through source review;
+  photo amounts require caption evidence. Every AI proposal and its repeated
+  use needs fresh approval of the displayed revision.
 
 - **Food diary:** measured meals, preparation-aware current-version search, in-flow USDA discovery/review, optional typed-barcode lookup, reviewed label entry, corrections, delete/undo, food aliases, favorites, repeats and guided batch recipes. Missing-food entry preserves pending meal items and dates; accepted source records work offline.
 - **Approval workflow:** persistent rough-portion drafts, version-specific approval, expiry and safe handling of stale buttons or edited messages.

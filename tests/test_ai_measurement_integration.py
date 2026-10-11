@@ -147,6 +147,7 @@ async def test_photo_download_failures_count_without_inference_or_content(
             "message": update.message.model_copy(
                 update={
                     "text": None,
+                    "caption": "150g cooked rice",
                     "photo": [
                         PhotoSize(
                             file_id="synthetic", file_unique_id="synthetic", width=1, height=1
