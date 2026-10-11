@@ -8,11 +8,18 @@ then enters the protected `production` environment. An operator can also dispatc
 the release workflow on `main` with its confirmation input enabled.
 
 The production environment is restricted to `main` and requires owner approval,
-matching the other applications on the deployment host. Configure `DEPLOY_HOST`,
-`DEPLOY_PORT` and `DEPLOY_USER` as environment variables. Store only a dedicated
-deployment SSH private key and the independently trusted SSH host-key entry as
-`DEPLOY_SSH_PRIVATE_KEY` and `DEPLOY_KNOWN_HOSTS`. Application credentials,
+matching the other applications on the deployment host. Store `DEPLOY_HOST`,
+`DEPLOY_PORT`, `DEPLOY_USER`, the dedicated `DEPLOY_SSH_PRIVATE_KEY` and the
+independently trusted `DEPLOY_KNOWN_HOSTS` entry as production environment secrets.
+Connection details must not use GitHub configuration variables, which appear
+unmasked in job logs. Application credentials,
 diary records, backups and operator inventory remain outside GitHub.
+
+Release and rollback steps capture SSH output in mode-0600 runner temporary files
+and remove them on exit. Public job logs contain only a success or failure result;
+detailed deployment and recovery evidence stays in private host records. Never
+print or upload captured SSH output. A workflow fix does not remove older logs;
+review historical exposure separately before approving the next deployment.
 
 ## Host installation
 

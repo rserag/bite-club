@@ -103,16 +103,25 @@ jobs:
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
       - name: Deploy verified immutable image
         env:
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           IMAGE: ${{ needs.publish.outputs.image }}
         run: |
           [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
           [[ $IMAGE =~ ^ghcr\.io/rserag/bite-club@sha256:[0-9a-f]{64}$ ]]
-          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+          umask 077
+          ssh_output=$(mktemp "${RUNNER_TEMP:?}/bite-club-ssh.XXXXXX")
+          trap 'rm -f -- "$ssh_output"' EXIT
+          trap 'exit 1' HUP INT TERM
+          if ! ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=15 -i "$HOME/.ssh/id_ed25519" -p "$DEPLOY_PORT" \
-            "$DEPLOY_USER@$DEPLOY_HOST" "release $GITHUB_SHA $IMAGE"
+            "$DEPLOY_USER@$DEPLOY_HOST" "release $GITHUB_SHA $IMAGE" \
+            > "$ssh_output" 2>&1; then
+            printf '%s\n' 'Deployment failed; inspect private host records.' >&2
+            exit 1
+          fi
+          printf '%s\n' 'Deployment completed.'
       - name: Remove deployment key
         if: always()
         run: rm -f "$HOME/.ssh/id_ed25519"

@@ -17,17 +17,25 @@ jobs:
         env:
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
+          umask 077
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
-          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+          ssh_output=$(mktemp "${RUNNER_TEMP:?}/bite-club-ssh.XXXXXX")
+          trap 'rm -f -- "$ssh_output"' EXIT
+          trap 'exit 1' HUP INT TERM
+          if ! ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=15 -i "$HOME/.ssh/id_ed25519" -p "$DEPLOY_PORT" \
-            "$DEPLOY_USER@$DEPLOY_HOST" rollback
+            "$DEPLOY_USER@$DEPLOY_HOST" rollback > "$ssh_output" 2>&1; then
+            printf '%s\n' 'Rollback failed; inspect private host records.' >&2
+            exit 1
+          fi
+          printf '%s\n' 'Rollback completed.'
       - name: Remove deployment key
         if: always()
         run: rm -f "$HOME/.ssh/id_ed25519"
