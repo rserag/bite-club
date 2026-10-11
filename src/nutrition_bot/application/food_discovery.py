@@ -36,6 +36,88 @@ from nutrition_bot.domain.meal_text import MealTextError, MeasuredFood, ParsedMe
 FLOW_TTL_SECONDS = 1800
 
 
+async def start_ai_discovery(
+    connection: AsyncConnection,
+    pending: list[dict[str, Any]],
+    message: Message,
+    *,
+    action_key: str,
+    reference: datetime,
+    owner_id: int,
+    remote_enabled: bool,
+    local_date: date,
+    label: str,
+    request_key: str,
+) -> MealReply:
+    """Continue a complete typed AI interpretation through source review, never a save.
+
+    Known identities, quantities and date remain in the private guided flow. Only
+    a bounded canonical food name reaches the existing food-source queue.
+    """
+    first, *remaining = pending
+    return await _continue_item(
+        connection,
+        first,
+        {
+            "continuation": "meal",
+            "items": [],
+            "pending": remaining,
+            "date": local_date.isoformat(),
+            "label": label,
+            "source_chat_id": message.chat.id,
+            "source_message_id": message.message_id,
+            "review_required": True,
+            "ai_action_key": action_key,
+            "ai_request_key": request_key,
+            "remote_enabled": remote_enabled,
+        },
+        message,
+        action_key=action_key,
+        reference=reference,
+        owner_id=owner_id,
+    )
+
+
+async def _continue_item(
+    connection: AsyncConnection,
+    item: dict[str, Any],
+    payload: dict[str, Any],
+    message: Message,
+    *,
+    action_key: str,
+    reference: datetime,
+    owner_id: int,
+) -> MealReply:
+    payload = {
+        **payload,
+        "quantity": item.get("quantity"),
+        "ai_basis": item.get("ai_basis"),
+        "preparation_details": item.get("preparation_details"),
+    }
+    if item.get("food_id"):
+        return await select_food(
+            connection,
+            payload,
+            {"food_id": item["food_id"], "name": item["name"]},
+            message,
+            action_key=action_key,
+            reference=reference,
+            bot_id=0,
+            owner_id=owner_id,
+            retention_days=30,
+        )
+    return await start_search(
+        connection,
+        item["query"],
+        payload,
+        action_key=action_key,
+        owner_id=owner_id,
+        chat_id=message.chat.id,
+        remote_enabled=payload.get("remote_enabled", False),
+        required_preparation=item.get("preparation"),
+    )
+
+
 def food_search_input(
     text: str, payload: dict[str, Any], reference: datetime
 ) -> tuple[str, dict[str, Any]]:
@@ -312,6 +394,11 @@ def _choices(payload: dict[str, Any], revision: int, status: str = "local") -> M
     from nutrition_bot.application.navigation import menu
 
     lines = ["Choose the food and preparation:"]
+    if payload.get("review_required"):
+        lines.insert(0, "AI proposal needs a reviewed food · " + payload["date"])
+        lines.append("Review this food, then review the complete editable meal draft.")
+        if payload.get("quantity"):
+            lines.append("Proposed quantity: " + payload["quantity"])
     buttons = []
     for index, food in enumerate(payload.get("locals", [])[:5], 1):
         lines.append(f"{index}. {food['name']} · {food['preparation'].replace('_', ' ')} · Saved")
@@ -434,13 +521,14 @@ async def start_search(
     owner_id: int,
     chat_id: int,
     remote_enabled: bool = True,
+    required_preparation: Preparation | None = None,
 ) -> MealReply:
     from nutrition_bot.application.navigation import begin, menu
 
     query = " ".join(query.split())
     if not 1 <= len(query) <= 120:
         return menu("Use a food name from 1 to 120 characters.", (("Cancel", "cancel"),))
-    preparation = infer_preparation(query)
+    preparation = required_preparation or infer_preparation(query)
     locals_ = await local_food_search(connection, query, preparation=preparation, limit=5)
     payload = {
         **payload,
@@ -591,6 +679,7 @@ def preview_card(payload: dict[str, Any], revision: int, preview: SourcePreview)
             payload.get("quantity")
             and not payload.get("pending")
             and payload.get("continuation") != "recipe"
+            and not payload.get("review_required")
         )
         buttons = (
             (
@@ -620,6 +709,10 @@ async def select_food(
     **context: Any,
 ) -> MealReply:
     from nutrition_bot.application.navigation import begin, menu
+
+    if "food_id" in selected:
+        food = await get_food_version(connection, selected["food_id"])
+        selected = {**selected, "preparation": food.record.preparation}
 
     if payload.get("continuation") == "recipe":
         if "source_id" in selected:
@@ -655,41 +748,62 @@ async def select_food(
             "For a rough amount, send about 80 g.",
             (("Cancel", "cancel"),),
         )
-    items = payload.get("items", []) + [{**selected, "quantity": payload["quantity"]}]
+    items = payload.get("items", []) + [
+        {
+            **selected,
+            "quantity": payload["quantity"],
+            "ai_basis": payload.get("ai_basis"),
+            "preparation_details": payload.get("preparation_details"),
+        }
+    ]
     pending = payload.get("pending", [])
     if pending:
         next_item, *remaining = pending
-        return await start_search(
+        return await _continue_item(
             connection,
-            next_item["query"],
+            next_item,
             {
                 **payload,
                 "items": items,
-                "quantity": next_item.get("quantity"),
                 "pending": remaining,
             },
+            message,
             action_key=action_key,
+            reference=reference,
             owner_id=owner_id,
-            chat_id=message.chat.id,
-            remote_enabled=payload.get("remote_enabled", False),
         )
     revision = await begin(
         connection, owner_id, "food_discovery_review", {**payload, "items": items}
     )
-    return meal_card(items, revision, payload.get("date"))
+    return meal_card(
+        items, revision, payload.get("date"), review_required=payload.get("review_required", False)
+    )
 
 
-def meal_card(items: list[dict[str, Any]], revision: int, day: str | None) -> MealReply:
+def meal_card(
+    items: list[dict[str, Any]], revision: int, day: str | None, *, review_required: bool = False
+) -> MealReply:
     from nutrition_bot.application.navigation import menu
 
     rough = any(item["quantity"].startswith("about ") for item in items)
     lines = [f"Review meal · {day or 'today'}"] + [
-        f"• {item['quantity']} {item['name']}" for item in items
+        f"• {item['quantity']} {item['name']}"
+        + (f" ({item['preparation'].replace('_', ' ')})" if item.get("preparation") else "")
+        for item in items
     ]
     if rough:
         lines.append("Rough quantities will open a draft for explicit estimate approval.")
+    if review_required:
+        lines.append("This AI proposal will open an editable draft for approval; nothing is saved.")
     buttons: tuple[tuple[str, str], ...] = (
-        ("Review estimate" if rough else "Confirm & log", f"flow:{revision}:discover:save"),
+        (
+            "Review AI draft"
+            if review_required
+            else "Review estimate"
+            if rough
+            else "Confirm & log",
+            f"flow:{revision}:discover:save",
+        ),
     )
     if len(items) < 10:
         buttons += (("Add another food", f"flow:{revision}:discover:more"),)
@@ -738,6 +852,48 @@ async def save_guided_meal(
         measured.append(SourceMealItem(version_id=version_id, grams=amount))
         command_items.append(quantity + " #" + str(version_id))
     await cancel(connection, owner_id)
+    if payload.get("review_required"):
+        from nutrition_bot.adapters.database.drafts import create_draft
+        from nutrition_bot.application.draft_conversation import draft_receipt
+        from nutrition_bot.domain.drafts import DraftContent, PlannedItem
+
+        planned = tuple(
+            PlannedItem(
+                food_version_id=resolved.version_id,
+                edible_milligrams=grams_to_milligrams(resolved.grams),
+                original_quantity=format(resolved.grams, "f"),
+                original_unit="g",
+                estimate_basis=(item.get("ai_basis") or "User-described approximate amount")
+                if item["quantity"].startswith("about ")
+                else None,
+                preparation_details=item.get("preparation_details"),
+            )
+            for item, resolved in zip(items, measured, strict=True)
+        )
+        draft = await create_draft(
+            connection,
+            DraftContent(
+                review_required=True,
+                label=payload.get("label", "Meal"),
+                local_date=day,
+                timezone=str(reference.tzinfo),
+                consumed_at=_date_timestamp(day, reference),
+                source_chat_id=payload.get("source_chat_id", message.chat.id),
+                source_message_id=payload.get("source_message_id", message.message_id),
+                items=planned,
+            ),
+            action_key=action_key,
+            now=time.time(),
+        )
+        if payload.get("ai_action_key"):
+            from nutrition_bot.adapters.database.drafts import track_draft_action
+
+            await track_draft_action(connection, draft.id, payload["ai_action_key"])
+        if payload.get("ai_request_key"):
+            from nutrition_bot.application.ai_metrics import link_draft
+
+            await link_draft(connection, payload["ai_request_key"], draft.id, draft.revision)
+        return await draft_receipt(connection, draft, "AI proposal — review every item")
     if rough:
         label = payload.get("label", "Meal")
         command = (
@@ -893,6 +1049,7 @@ async def _discovery_action(
             and not payload.get("pending")
             and payload.get("continuation") != "recipe"
             and not payload["quantity"].startswith("about ")
+            and not payload.get("review_required")
         ):
             return await save_guided_meal(
                 connection,

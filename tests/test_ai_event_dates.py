@@ -67,6 +67,7 @@ async def test_delayed_ai_meal_uses_original_message_day_like_measured_parser(
         received = received.model_copy(
             update={
                 "text": None,
+                "caption": "A bowl of cooked rice.",
                 "photo": [
                     PhotoSize(
                         file_id="synthetic",

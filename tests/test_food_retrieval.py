@@ -17,7 +17,7 @@ async def test_old_relevant_food_survives_more_than_forty_new_unrelated_foods(st
                 connection, reviewed_food(name=f"Synthetic unrelated product {index}")
             )
     context = await AiService(store)._catalog("I ate 80g raw carrot and 50g another food")
-    assert len(context) == 40
+    assert len(context) == 1
     assert context[0].food_version_id == wanted.version_id
 
 
@@ -31,10 +31,8 @@ async def test_current_revision_replaces_history_without_crowding_out_other_iden
         )
         unrelated = await publish_reviewed_food(connection, reviewed_food(name="Synthetic bean"))
     context = await AiService(store)._catalog("carrot")
-    assert {item.food_version_id for item in context} == {
-        current.version_id,
-        unrelated.version_id,
-    }
+    assert {item.food_version_id for item in context} == {current.version_id}
+    assert unrelated.version_id not in {item.food_version_id for item in context}
     assert context[0].food_version_id == current.version_id
 
 
@@ -55,8 +53,9 @@ async def test_explicit_active_alias_can_retrieve_its_pinned_historical_snapshot
         )
     context = await AiService(store)._catalog("80g crunchy snack")
     assert context[0].food_version_id == first.version_id
-    assert "Crunchy snack" in context[0].name
-    assert current.version_id in {item.food_version_id for item in context}
+    assert context[0].aliases == ("Crunchy snack",)
+    assert context[0].name == first.record.name
+    assert current.version_id not in {item.food_version_id for item in context}
 
 
 async def test_unicode_words_and_literal_wildcards_do_not_change_query_semantics(store):

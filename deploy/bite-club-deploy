@@ -10,6 +10,10 @@ readonly previous="$root/state/previous.env"
 die() { printf '[bite-club-deploy] %s\n' "$*" >&2; exit 1; }
 validate_revision() { [[ $1 =~ ^[0-9a-f]{40}$ ]] || die 'Invalid revision'; }
 validate_image() { [[ $1 =~ ^ghcr\.io/rserag/bite-club@sha256:[0-9a-f]{64}$ ]] || die 'Invalid image'; }
+validate_local_image() { [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]] || die 'Invalid local image'; }
+validate_record_image() {
+  [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]] || validate_image "$1"
+}
 
 read_release() {
   local first second extra
@@ -19,7 +23,7 @@ read_release() {
   revision=${first#DEPLOYED_REVISION=}
   image=${second#BOT_IMAGE=}
   validate_revision "$revision"
-  validate_image "$image"
+  validate_record_image "$image"
 }
 
 compose() {
@@ -43,6 +47,11 @@ check_db() {
   isolated "$target_volume" "$target_image" \
     --mount "type=bind,src=$root/dbcheck.py,dst=/dbcheck.py,readonly" \
     --entrypoint python -- -c 'exec(compile(open("/dbcheck.py").read(), "/dbcheck.py", "exec"))' /data/app.sqlite3
+}
+
+verify_preservation() {
+  local baseline=$1 inspected=$2
+  python3 -c 'import json,sys; sys.path.insert(0,sys.argv[1]); from dbcheck import verify_preserved; verify_preserved(json.load(open(sys.argv[3])),json.load(open(sys.argv[2])))' "$root" "$baseline" "$inspected"
 }
 
 archive_volume() {
@@ -89,12 +98,17 @@ healthy() {
 }
 
 deploy_release() {
-  local wanted_revision=$1 wanted_image=$2 candidate old_image trial run_dir
+  local wanted_revision=$1 wanted_image=$2 local_only=${3-false} candidate old_image trial run_dir
   validate_revision "$wanted_revision"
-  validate_image "$wanted_image"
+  if [[ $local_only == true ]]; then validate_local_image "$wanted_image"; else validate_image "$wanted_image"; fi
   [[ $(stat -c '%u:%a' "$root/runtime.env") == 0:600 && ! -L $root/runtime.env ]] || die 'Runtime configuration must be root-owned mode 600'
   docker volume inspect "$volume" >/dev/null || die 'Data volume must be provisioned before deployment'
-  docker pull "$wanted_image" || die 'Image pull failed; current worker unchanged'
+  if [[ $local_only == true ]]; then
+    [[ $(docker image inspect --format '{{.Id}}' "$wanted_image") == "$wanted_image" ]] || die 'Verified local image is missing'
+    [[ $(docker image inspect --format '{{.Architecture}}' "$wanted_image") == amd64 ]] || die 'Local image architecture does not match host'
+  else
+    docker pull "$wanted_image" || die 'Image pull failed; current worker unchanged'
+  fi
   [[ $(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$wanted_image") == "$wanted_revision" ]] || die 'Image revision does not match requested source'
   candidate=$(mktemp "$root/state/candidate.XXXXXX")
   printf 'DEPLOYED_REVISION=%s\nBOT_IMAGE=%s\n' "$wanted_revision" "$wanted_image" > "$candidate"
@@ -115,7 +129,7 @@ deploy_release() {
      ! check_db "$trial" "$old_image" > "$run_dir/before.json" || \
      ! migrate_volume "$trial" "$wanted_image" || \
      ! check_db "$trial" "$wanted_image" > "$run_dir/after.json" || \
-     ! python3 -c 'import json,sys; sys.path.insert(0,sys.argv[1]); from dbcheck import verify_preserved; verify_preserved(json.load(open(sys.argv[3])),json.load(open(sys.argv[2])))' "$root" "$run_dir/before.json" "$run_dir/after.json"; then
+     ! verify_preservation "$run_dir/before.json" "$run_dir/after.json"; then
     docker volume rm "$trial" >/dev/null
     if [[ -f $current ]]; then compose "$current" up -d --no-build --wait --wait-timeout 180; fi
     die 'Isolated restore/migration rehearsal failed; production data unchanged'
@@ -129,6 +143,7 @@ deploy_release() {
     die 'Migration failed; restored pre-upgrade data'
   fi
   check_db "$volume" "$wanted_image" > "$run_dir/pre-start.json" || die 'Migrated database check failed; worker left stopped'
+  verify_preservation "$run_dir/before.json" "$run_dir/pre-start.json" || die "Migrated data preservation failed; worker left stopped and data retained in $run_dir; operator recovery required"
   if ! compose "$candidate" up -d --no-build --wait --wait-timeout 180 || ! healthy "$candidate" "$wanted_image"; then
     compose "$candidate" stop bot || die 'Failed candidate could not be stopped'
     archive_volume "$wanted_image" "$run_dir/failed-start.tar.gz" || die 'Failed candidate backup failed'
@@ -142,22 +157,32 @@ deploy_release() {
 }
 
 main() {
-  [[ $# == 2 && $1 == --request && $EUID == 0 ]] || die 'Invalid invocation'
-  [[ $2 != *$'\n'* && $2 != *$'\r'* ]] || die 'Multiline requests are forbidden'
+  [[ $EUID == 0 ]] || die 'Invalid invocation'
+  local local_only=false request
+  if [[ $# == 3 && $1 == --local-release ]]; then
+    validate_revision "$2"
+    validate_local_image "$3"
+    local_only=true
+    request="release $2 $3"
+  elif [[ $# == 2 && $1 == --request ]]; then
+    request=$2
+  else die 'Invalid invocation'; fi
+  [[ $request != *$'\n'* && $request != *$'\r'* ]] || die 'Multiline requests are forbidden'
   install -d -m 700 "$root/state" "$root/releases" "$root/backups"
   exec 9>/run/lock/bite-club-deploy.lock
   flock -n 9 || die 'Another deployment is in progress'
   local -a words
-  read -r -a words <<< "$2"
+  read -r -a words <<< "$request"
   case ${words[0]-} in
     release)
       [[ ${#words[@]} == 3 ]] || die 'Release requires revision and immutable image'
-      deploy_release "${words[1]}" "${words[2]}"
+      deploy_release "${words[1]}" "${words[2]}" "$local_only"
       ;;
     rollback)
       [[ ${#words[@]} == 1 ]] || die 'Rollback takes no arguments'
       read_release "$previous"
-      deploy_release "$revision" "$image"
+      if [[ $image == sha256:* ]]; then local_only=true; fi
+      deploy_release "$revision" "$image" "$local_only"
       ;;
     status)
       [[ ${#words[@]} == 1 ]] || die 'Status takes no arguments'

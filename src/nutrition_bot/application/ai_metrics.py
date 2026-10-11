@@ -316,8 +316,11 @@ def metrics_summary(
     """
     if type(days) is not int or not 1 <= days <= 30:
         raise ValueError("Choose 1–30 days")
-    for limit, minimum in ((bot_daily_limit, 1), (evaluation_daily_limit, 0)):
-        if limit is not None and (type(limit) is not int or not minimum <= limit <= 100):
+    for limit, minimum, maximum in (
+        (bot_daily_limit, 1, 100),
+        (evaluation_daily_limit, 0, 300),
+    ):
+        if limit is not None and (type(limit) is not int or not minimum <= limit <= maximum):
             raise ValueError("Invalid daily invocation limit")
     end = time.time() if now is None else now
     if not math.isfinite(end) or end < 0:

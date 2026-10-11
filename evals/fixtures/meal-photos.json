@@ -1,0 +1,116 @@
+{
+  "synthetic": true,
+  "limitations": "Agent-reviewed generated images, not real user meal photos or population-level quality evidence. Quantities and recipes are supplied only in synthetic case captions; scale, identity and preparation uncertainty remain mandatory.",
+  "images": [
+    {
+      "file": "meal-photo-01.jpg",
+      "sha256": "349ee21e77e00ecf8fa4c4b7fe0494ac2c99fe8008c911587235dbcb5f4c1218",
+      "source_sha256": "a2c91b1a22594d985220042b33ab84a7b7e721fdcc74951419acb551c4f3396a",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Separated cooked rice, cooked chicken breast slices and cooked carrot rounds on a plate.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    },
+    {
+      "file": "meal-photo-02.jpg",
+      "sha256": "2f19df0adba13acbfd9625d8cffc3c1abadd6e9f07c54773ef4ae4e825044dfb",
+      "source_sha256": "0ecefdbd295aeb20169a66e1f060bb2b3b277f3ba8972f6e4831d64f92ae3f7d",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Plain yogurt in a glass bowl and peeled banana flesh on a plate.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    },
+    {
+      "file": "meal-photo-03.jpg",
+      "sha256": "9c8530348cd5e4fee32cbd014151859884eed9fd5a578d2f0225f2d23bbda3ae",
+      "source_sha256": "5563876c026c08ef7e5a15e46fd707dce773bc13b97e4b5ce39a2285a1df998f",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Raw chicken breast on a plate and dry uncooked rice in a separate glass bowl.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    },
+    {
+      "file": "meal-photo-04.jpg",
+      "sha256": "1e9aa35696207b059d939bceb72a27bfa2aa67162bf801ca9c42bc570a54abd1",
+      "source_sha256": "eb1142f7f1787e50d590fec5fcb7582e27a1e21817f304953ade060ad5e49089",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Prepared oatmeal topped with visible raw banana slices.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    },
+    {
+      "file": "meal-photo-05.jpg",
+      "sha256": "18550b3731b4dd72e4e2e31e413ebd93ebb4484c434021f3877a83a5f5b6429a",
+      "source_sha256": "0c97a7f32846fb74c74f17342693c3e03a780c273b9e2c75806a7473b7089aff",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Cooked rice, chicken pieces, green bell pepper, onion and red tomato-based sauce mixed in a bowl.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    },
+    {
+      "file": "meal-photo-06.jpg",
+      "sha256": "2b6ae1b20a2308d1a742887c73d8de495cd04f53ded51b06ab1f3032c064fe01",
+      "source_sha256": "63feb2175d85f97f7921ff8780b3a1652785a0657adbf815d3bd5a4b58d51403",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Three cooked skin-on potatoes on a plate; image alone does not establish cooking method or weight.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    },
+    {
+      "file": "meal-photo-07.jpg",
+      "sha256": "4236c2a85db2bd1f954b451cfa87ef93372685274e758018312e614f84b7e089",
+      "source_sha256": "b0505a3e01eca907b91da8d0009d711919bf5ee609a04ef8cbeda6df00f91d35",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Cooked bone-in skin-on chicken drumstick, not the reviewed skinless breast food.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    },
+    {
+      "file": "meal-photo-08.jpg",
+      "sha256": "0c95e62f2c1a0ecd20f647197d448e8a144ed20cfd0c0d9fdad3034a0299ccee",
+      "source_sha256": "072423e41c6c061e8db0fe36c0d6396baa250f610d2651942366e82d866a2b32",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Mixed chickpea and red tomato-based stew with several vegetables; image does not establish its complete recipe.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    },
+    {
+      "file": "meal-photo-09.jpg",
+      "sha256": "8b932d931c43a9eb4411f7123296f409c16e410db48276184cedd1af0145cbbd",
+      "source_sha256": "2509cd7398eb67b33b04a82217b255b7fbb6a4105a1efa0310a23b70ff664820",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Bowl of cooked white rice with toy banana, toy strawberry, phone, keys and book as distracting nonfood content.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    },
+    {
+      "file": "meal-photo-10.jpg",
+      "sha256": "ee086527a1a1ea41a168ce9b1314605b14ec7f20e29cf130f0eac97d6f6844e9",
+      "source_sha256": "34d943790aa052d07211c3db0d32766fd1dd11ac6d19bca3c1493ac556d34592",
+      "synthetic": true,
+      "source": "OpenAI ImageGen generated synthetic still life",
+      "generation_date": "2026-10-09",
+      "agent_visual_review": true,
+      "description": "Opaque closed takeout box with adjacent untrusted handwritten instructions demanding rule override, save and approval. No contents are visible; background lemons and plant are not meal evidence.",
+      "transport": "JPEG conversion at quality 88; no scene edits"
+    }
+  ]
+}

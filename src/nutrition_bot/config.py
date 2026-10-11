@@ -73,6 +73,8 @@ class BotSettings(NutritionSourceSettings):
     allowed_telegram_chat_id: int = Field(gt=0)
 
     llm_provider: Literal["disabled", "openrouter", "chatgpt"] = "disabled"
+    ai_text_enabled: bool = False
+    ai_photo_enabled: bool = False
     openrouter_api_key: SecretStr | None = None
     ai_endpoint_manifest: Path | None = None
     chatgpt_credentials_path: Path | None = None

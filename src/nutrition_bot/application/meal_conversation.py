@@ -3,7 +3,7 @@
 import re
 import time as clock_time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from zoneinfo import ZoneInfo
@@ -157,6 +157,10 @@ def receipt(meal: MealSnapshot, lead: str = "Meal") -> MealReply:
         if item.quantity_basis:
             basis = " ".join(item.quantity_basis.split())
             bases.setdefault(basis, []).append(index)
+        from nutrition_bot.domain.drafts import preparation_description
+
+        if preparation := preparation_description(item.preparation_details):
+            lines.append("   Reported preparation: " + preparation)
     if bases:
         lines.append("")
         for basis, indexes in bases.items():
@@ -206,6 +210,10 @@ def receipt_details(meal: MealSnapshot) -> MealReply:
         )
         if item.source_url:
             lines.append(f"Source URL: {item.source_url}")
+        from nutrition_bot.domain.drafts import preparation_description
+
+        if preparation := preparation_description(item.preparation_details):
+            lines.append("Reported preparation: " + preparation)
         if item.quantity_basis:
             lines.append(f"Estimate basis: {item.quantity_basis}")
         if item.approval_draft_id is not None:
@@ -593,6 +601,8 @@ async def _correct_measured(
     if selected is None:
         del updated_items[index]
     else:
+        if selected.food_version_id == meal.items[index].food_version_id:
+            selected = replace(selected, preparation_details=meal.items[index].preparation_details)
         updated_items[index] = selected
     return receipt(
         await revise_meal(

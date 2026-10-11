@@ -105,6 +105,24 @@ def test_controller_accepts_exact_allowlisted_ref() -> None:
     )
 
 
+def test_local_release_record_remains_readable_but_remote_key_cannot_submit_it(
+    tmp_path: Path,
+) -> None:
+    image = "sha256:" + "1" * 64
+    record = tmp_path / "release.env"
+    record.write_text("DEPLOYED_REVISION=" + "0" * 40 + "\nBOT_IMAGE=" + image + "\n")
+    assert shell('read_release "$1"', str(record)).returncode == 0
+    assert shell('validate_image "$1"', image).returncode != 0
+    assert shell('validate_local_image "$1"', image).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "image", ["nutrition-bot:manual", "sha256:" + "1" * 63, "sha256:" + "1" * 64 + ";id"]
+)
+def test_local_release_requires_exact_immutable_image_id(image: str) -> None:
+    assert shell('validate_local_image "$1"', image).returncode != 0
+
+
 def test_isolated_command_keeps_image_before_command() -> None:
     result = shell(
         'docker() { printf "%s\\n" "$@"; }; '
@@ -140,3 +158,108 @@ def test_check_cli_outputs_only_fingerprints(database: Path) -> None:
     evidence = json.loads(result.stdout)
     assert evidence["schema"] == "synthetic_revision"
     assert set(evidence["tables"]["meals"]) == {"count", "sha256"}
+
+
+@pytest.mark.parametrize("rewrite_actual", [False, True])
+def test_actual_migration_preservation_is_verified_before_starting_candidate(
+    tmp_path: Path, database: Path, rewrite_actual: bool
+) -> None:
+    """A successful trial cannot hide a differing production migration outcome."""
+    for name in ("state", "backups", "releases"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "runtime.env").write_text("SYNTHETIC_ONLY=true\n")
+    (tmp_path / "dbcheck.py").write_bytes((ROOT / "deploy/dbcheck.py").read_bytes())
+    (tmp_path / "state/current.env").write_text(
+        f"DEPLOYED_REVISION={'1' * 40}\nBOT_IMAGE=sha256:{'1' * 64}\n"
+    )
+    controller = tmp_path / "isolated-controller"
+    controller.write_text(
+        CONTROLLER.read_text().replace("readonly root=/opt/bite-club", 'readonly root="$2"')
+    )
+    # Only deployment orchestration is real. Docker/service/backup IO is replaced
+    # with isolated files and events; the actual dbcheck and verifier are used.
+    code = (
+        r"""
+source "$1"; shift
+rewrite_actual=$2
+production_database=$3
+stat() { printf '0:600\n'; }
+docker() {
+  if [[ $1 == image && $2 == inspect ]]; then
+    case $4 in
+      *revision*) printf '%s\n' "$wanted_revision" ;;
+      *Architecture*) printf 'amd64\n' ;;
+      *.Id*) printf '%s\n' "$wanted_image" ;;
+    esac
+  fi
+}
+compose() { printf 'compose:%s\n' "$2" >> "$root/events"; }
+archive_volume() { cp "$production_database" "$2"; }
+restore_volume() {
+  printf 'restore:%s\n' "$1" >> "$root/events"
+  if [[ $1 == "$volume" ]]; then cp "$3" "$production_database"
+  else cp "$3" "$root/trial.sqlite3"; fi
+}
+check_db() {
+  if [[ $1 == "$volume" ]]; then python3 "$root/dbcheck.py" "$production_database"
+  else python3 "$root/dbcheck.py" "$root/trial.sqlite3"; fi
+}
+migrate_volume() {
+  local database=$root/trial.sqlite3 rewrite=false
+  if [[ $1 == "$volume" ]]; then database=$production_database; rewrite=$rewrite_actual; fi
+  python3 - "$database" "$rewrite" <<'PY'
+import sqlite3,sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("UPDATE alembic_version SET version_num='candidate_synthetic'")
+    db.execute("CREATE TABLE candidate_addition (id INTEGER)")
+    if sys.argv[2] == 'true':
+        db.execute("UPDATE meals SET nutrient=0 WHERE nutrient IS NULL")
+PY
+}
+healthy() { printf 'healthy\n' >> "$root/events"; }
+deploy_release """
+        + "3" * 40
+        + " sha256:"
+        + "2" * 64
+        + " true\n"
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            code,
+            "synthetic",
+            str(controller),
+            str(tmp_path),
+            str(rewrite_actual).lower(),
+            str(database),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    events = (tmp_path / "events").read_text().splitlines()
+    assert "compose:stop" in events
+    assert not any(event == "restore:nutrition-bot_bot-data" for event in events)
+    runs = list((tmp_path / "backups").glob("cutover.*"))
+    assert len(runs) == 1
+    assert (runs[0] / "pre-start.json").is_file()
+    with closing(sqlite3.connect(database)) as db:
+        value = db.execute("SELECT nutrient FROM meals WHERE id=1").fetchone()[0]
+    if rewrite_actual:
+        assert result.returncode != 0
+        assert "Migrated data preservation failed" in result.stderr
+        assert "compose:up" not in events and "healthy" not in events
+        assert value == 0  # Keep the candidate state for recovery; never discard it.
+        assert (
+            (tmp_path / "state/current.env").read_text().startswith("DEPLOYED_REVISION=" + "1" * 40)
+        )
+        with closing(sqlite3.connect(runs[0] / "data.tar.gz")) as backup:
+            assert backup.execute("SELECT nutrient FROM meals WHERE id=1").fetchone() == (None,)
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "compose:up" in events and "healthy" in events
+        assert value is None
+        assert (
+            (tmp_path / "state/current.env").read_text().startswith("DEPLOYED_REVISION=" + "3" * 40)
+        )

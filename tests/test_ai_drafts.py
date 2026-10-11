@@ -37,6 +37,7 @@ from nutrition_bot.domain.ai import (
     AiMealItem,
     AiOutcome,
     AiUnavailable,
+    quantity_basis,
 )
 from nutrition_bot.domain.ai_policy import AiEndpointManifest, ReviewedAiRoute, load_manifest
 from tests.helpers import message
@@ -98,6 +99,40 @@ def proposed(**changes):
     return value
 
 
+def provider_payload(proposal):
+    """Encode synthetic legacy domain fixtures into the new provider-only wire shape.
+
+    Invalid surplus fields stay surplus, so schema failure fixtures remain invalid.
+    """
+    if "result" in proposal:
+        return proposal
+    value = dict(proposal)
+    intent = value.pop("intent", "meal")
+    discovery = value.get("discovery_items")
+    value["kind"] = "discovery" if intent == "clarify" and discovery else intent
+    for field in ("items", "unresolved", "discovery_items"):
+        if field in value and not value[field]:
+            del value[field]
+    if value["kind"] in {"meal", "discovery"}:
+        if value.get("clarification_reason", "incomplete") in {"incomplete", "unknown_food"}:
+            value.pop("clarification_reason", None)
+    else:
+        value.setdefault("clarification_reason", "incomplete")
+        value.setdefault("unresolved", [])
+    for field in ("items", "discovery_items"):
+        if field in value:
+            value[field] = [dict(item) for item in value[field]]
+            for item in value[field]:
+                source = "reported" if item.get("grams") is not None else "unresolved"
+                item.setdefault("quantity_source", source)
+                item.setdefault(
+                    "uncertainty", "none" if source == "reported" else "portion_missing"
+                )
+                item.setdefault("identity_evidence", None)
+                item.setdefault("quantity_evidence", None)
+    return {"result": value}
+
+
 def completion(proposal=None, **changes):
     value = dict(
         id="synthetic-generation",
@@ -105,7 +140,10 @@ def completion(proposal=None, **changes):
         provider="Synthetic Provider",
         usage={"prompt_tokens": 100, "completion_tokens": 50, "cost": 0.001},
         choices=[
-            {"finish_reason": "stop", "message": {"content": json.dumps(proposal or proposed())}}
+            {
+                "finish_reason": "stop",
+                "message": {"content": json.dumps(provider_payload(proposal or proposed()))},
+            }
         ],
     )
     value.update(changes)
@@ -593,10 +631,8 @@ async def test_ai_proposal_creates_reviewed_draft_without_model_prose_or_saving_
         assert draft.content.review_required is True
         assert draft.content.items[0].edible_milligrams == 150000
         assert draft.content.label == ("Lunch" if label == "Lunch" else "Meal")
-        origin = "text interpretation" if role == "meal_text" else "photo estimate"
-        assert (
-            draft.content.items[0].estimate_basis
-            == f"AI {origin}; review food, preparation and amount."
+        assert draft.content.items[0].estimate_basis == quantity_basis(
+            outcome.proposal.items[0], role
         )
         assert "1000" not in reply.text and "999" not in reply.text
         assert await connection.scalar(sa.select(sa.func.count()).select_from(meals)) == 0
@@ -689,7 +725,24 @@ async def test_telegram_ai_fallback_always_requires_current_button_after_measure
         calls += 1
         assert not store.writer_lock.locked()
         context = json.loads(json.loads(request.content)["messages"][1]["content"])
-        return httpx.Response(200, json=completion(proposed(local_date=context["local_date"])))
+        return httpx.Response(
+            200,
+            json=completion(
+                proposed(
+                    local_date=context["local_date"],
+                    items=[
+                        {
+                            "food_version_id": 1,
+                            "grams": "150",
+                            "basis": "Synthetic quantity",
+                            "quantity_source": "approximate",
+                            "uncertainty": "user_approximation",
+                            "quantity_evidence": "roughly 150 grams of cooked rice",
+                        }
+                    ],
+                )
+            ),
+        )
 
     adapter, client = adapter_with(transport)
     service.ai_service = AiService(store, manifest(), adapter)
@@ -697,7 +750,7 @@ async def test_telegram_ai_fallback_always_requires_current_button_after_measure
         first = await process(
             service,
             store,
-            message(1, "Lunch included rice, weighing roughly one hundred fifty grams."),
+            message(1, "Lunch included roughly 150 grams of cooked rice."),
         )
         assert first["payload"]["draft_id"] == 1 and calls == 1
         assert await ledger_counts(store) == (0, 0)

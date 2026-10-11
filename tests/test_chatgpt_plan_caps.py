@@ -77,6 +77,125 @@ def test_bot_cap_keeps_existing_validation_boundaries(limit):
         policy(daily_invocation_limit=limit)
 
 
+@pytest.mark.parametrize("extra", [1, 200, 350])
+def test_extra_evaluation_allowance_applies_only_to_the_exact_utc_date(extra):
+    selected = policy(extra_evaluation_date=TODAY, extra_evaluation_invocation_limit=extra)
+    assert selected.effective_evaluation_limit(TODAY) == 100 + extra
+    assert selected.effective_evaluation_limit(TODAY - timedelta(days=1)) == 100
+    assert selected.effective_evaluation_limit(TODAY + timedelta(days=1)) == 100
+    assert selected.daily_invocation_limit == selected.daily_evaluation_invocation_limit == 100
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"extra_evaluation_date": TODAY},
+        {"extra_evaluation_invocation_limit": 1},
+        {"extra_evaluation_date": TODAY, "extra_evaluation_invocation_limit": 0},
+        {"extra_evaluation_date": "invalid", "extra_evaluation_invocation_limit": 1},
+        *[
+            {"extra_evaluation_date": day, "extra_evaluation_invocation_limit": 1}
+            for day in (True, 0, 1.0, "2026-02-30", "2026-10-09T00:00:00Z")
+        ],
+        *[
+            {"extra_evaluation_date": TODAY, "extra_evaluation_invocation_limit": count}
+            for count in (-1, 351, True, "350", 1.0, None)
+        ],
+    ],
+)
+def test_extra_evaluation_allowance_rejects_unpaired_or_invalid_fields(changes):
+    with pytest.raises(ValidationError):
+        policy(**changes)
+
+
+async def test_dated_extra_attempts_exhaust_without_affecting_bot_or_resetting_history(
+    store, catalog, tmp_path
+):
+    day = datetime.now(UTC).date()
+    async with plan_pair(
+        store,
+        tmp_path,
+        daily_invocation_limit=1,
+        daily_evaluation_invocation_limit=1,
+        extra_evaluation_date=day,
+        extra_evaluation_invocation_limit=1,
+    ) as (bot, evaluation, calls, adapter):
+        first = await attempt(evaluation, "eval:synthetic:base")
+        assert first.status == "ready"
+        assert (await attempt(evaluation, "eval:synthetic:extra")).status == "ready"
+        assert (await attempt(evaluation, "eval:synthetic:over")).status == "quota"
+        assert (await attempt(evaluation, "eval:synthetic:base")) == first
+        assert (await attempt(bot, "normal-one")).status == "ready"
+        assert (await attempt(bot, "normal-two")).status == "quota"
+        adapter.policy = policy(daily_evaluation_invocation_limit=1)
+        assert (await attempt(evaluation, "eval:synthetic:after-strip")).status == "quota"
+    assert calls.count("POST") == 3
+    async with store.engine.connect() as connection:
+        assert (
+            await connection.scalar(sa.select(sa.func.count()).select_from(ai_plan_invocations))
+            == 3
+        )
+
+
+async def test_same_day_supplement_extension_preserves_unknown_attempt_accounting(
+    store, catalog, tmp_path
+):
+    day = datetime.now(UTC).date()
+    async with plan_pair(
+        store,
+        tmp_path,
+        fail=True,
+        daily_invocation_limit=1,
+        daily_evaluation_invocation_limit=1,
+        extra_evaluation_date=day,
+        extra_evaluation_invocation_limit=1,
+    ) as (_, evaluation, calls, adapter):
+        for index in range(2):
+            assert (await attempt(evaluation, f"eval:synthetic:initial-{index}")).status == (
+                "unavailable"
+            )
+        assert (await attempt(evaluation, "eval:synthetic:before-extension")).status == "quota"
+        adapter.policy = policy(
+            daily_invocation_limit=1,
+            daily_evaluation_invocation_limit=1,
+            extra_evaluation_date=day,
+            extra_evaluation_invocation_limit=3,
+        )
+        for index in range(2):
+            assert (await attempt(evaluation, f"eval:synthetic:additional-{index}")).status == (
+                "unavailable"
+            )
+        assert (await attempt(evaluation, "eval:synthetic:after-extension")).status == "quota"
+        assert calls.count("POST") == 4
+        assert adapter.policy.daily_invocation_limit == 1
+    async with store.engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(ai_plan_invocations)
+                .where(ai_plan_invocations.c.state == "unknown")
+            )
+            == 4
+        )
+
+
+async def test_out_of_date_extra_allowance_does_not_create_an_invocation(store, catalog, tmp_path):
+    async with plan_pair(
+        store,
+        tmp_path,
+        daily_evaluation_invocation_limit=0,
+        extra_evaluation_date=datetime.now(UTC).date() - timedelta(days=1),
+        extra_evaluation_invocation_limit=200,
+    ) as (_, evaluation, calls, _):
+        assert (await attempt(evaluation, "eval:synthetic:expired")).status == "quota"
+    assert calls == []
+    async with store.engine.connect() as connection:
+        assert (
+            await connection.scalar(sa.select(sa.func.count()).select_from(ai_plan_invocations))
+            == 0
+        )
+
+
 @pytest.mark.parametrize("first_pool", ["bot", "evaluation"])
 async def test_each_exhausted_pool_leaves_other_pool_available(
     store, catalog, tmp_path, first_pool

@@ -141,6 +141,8 @@ class Service:
         pulse = (await connection.execute(sa.select(heartbeat))).mappings().all()
         degraded = [row["component"] for row in pulse if row["state"] == "degraded"]
         network = "Degraded: " + ", ".join(degraded) if degraded else "No recorded API interruption"
+        text_enabled = bool(self.ai_service and self.ai_service.enabled_for("meal_text"))
+        photo_enabled = bool(self.ai_service and self.ai_service.enabled_for("meal_photo"))
         return (
             "Nutrition diary is running.\n"
             f"Pending updates: {pending}; queued replies: {queued}; failed replies: {failed}.\n"
@@ -152,14 +154,15 @@ class Service:
             "BJJ plans, recovery check-ins and /load workload guidance are available. "
             "Reviewed training allocation uses /allocation. Open /home for buttons and "
             "/settings to configure optional reminders. Food suggestions are not yet available.\n"
+            + "AI meal text: "
+            + ("enabled" if text_enabled else "disabled")
+            + "; AI meal photos: "
+            + ("enabled" if photo_enabled else "disabled")
+            + ". Every AI proposal needs approval of its current preview."
             + (
-                "AI is disabled; no paid calls are made."
-                if not self.ai_service
-                or not (
-                    self.ai_service.enabled_for("meal_text")
-                    or self.ai_service.enabled_for("meal_photo")
-                )
-                else "AI draft interpretation is enabled; saving still requires your review."
+                " AI is disabled; no paid AI calls are made."
+                if not text_enabled and not photo_enabled
+                else ""
             )
         )
 
@@ -1052,7 +1055,43 @@ class Service:
                                 message,
                                 action_key=key,
                                 reference=message_reference,
+                                owner_id=self.settings.allowed_telegram_user_id,
+                                remote_enabled=self.food_catalog.provider is not None,
                             )
+                        if result is None:
+                            if (
+                                message.photo
+                                and not update.edited_message
+                                and not message.reply_to_message
+                                and self.ai_service
+                                and self.ai_service.enabled_for("meal_photo")
+                                and not (message.caption or "").strip()
+                            ):
+                                result = MealReply(
+                                    "Meal-photo proposal needs a caption. Name each food and its "
+                                    "preparation, and provide edible grams when known. A photo "
+                                    "alone cannot establish edible weight. Send the photo with "
+                                    "those details, or enter the meal manually; "
+                                    "nothing has been saved.",
+                                    "ai_status",
+                                    ui_buttons=(("Enter meal manually", "log"),),
+                                )
+                        if result is None:
+                            if (
+                                message.photo
+                                and not update.edited_message
+                                and not message.reply_to_message
+                                and (
+                                    not self.ai_service
+                                    or not self.ai_service.enabled_for("meal_photo")
+                                )
+                            ):
+                                result = MealReply(
+                                    "Meal-photo AI is disabled. Enter the foods, preparation and "
+                                    "edible grams manually; nothing has been saved.",
+                                    "ai_status",
+                                    ui_buttons=(("Enter meal manually", "log"),),
+                                )
                         if result is None:
                             if (
                                 message.photo

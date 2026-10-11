@@ -18,7 +18,7 @@ from nutrition_bot.adapters.database.aliases import (
     resolve_alias,
     update_alias,
 )
-from nutrition_bot.adapters.database.drafts import create_draft
+from nutrition_bot.adapters.database.drafts import create_draft, meal_requires_ai_review
 from nutrition_bot.adapters.database.favorites import (
     create_favorite,
     find_favorite,
@@ -41,7 +41,12 @@ from nutrition_bot.application.meal_conversation import (
 )
 from nutrition_bot.application.recipe_display import portion_mass, share_lines
 from nutrition_bot.domain.aliases import Alias
-from nutrition_bot.domain.drafts import DraftContent, DraftError, PlannedItem
+from nutrition_bot.domain.drafts import (
+    DraftContent,
+    DraftError,
+    PlannedItem,
+    preparation_description,
+)
 from nutrition_bot.domain.meal_draft_text import parse_draft_meal
 from nutrition_bot.domain.meal_text import MealTextError, _parse_date
 from nutrition_bot.domain.recipe_portions import RecipeError
@@ -137,6 +142,8 @@ async def favorite_view(
         + (" · archived" if favorite.archived else "")
     ]
     lines.extend(share_lines(item.recipe_share for item in favorite.items))
+    if favorite.review_required:
+        lines.append("AI-origin favorite: review and approve a fresh draft for each occurrence.")
     for index, item in enumerate(favorite.items, 1):
         food = await get_food_version(connection, item.food_version_id)
         assert item.edible_milligrams is not None
@@ -148,6 +155,8 @@ async def favorite_view(
         )
         if item.estimate_basis:
             lines.append("   Basis: " + _short(" ".join(item.estimate_basis.split()), 60))
+        if preparation := preparation_description(item.preparation_details):
+            lines.append("   Reported preparation: " + preparation)
     ref = f"F{favorite.id}v{favorite.version_number}"
     lines.append(
         "Nothing was logged. "
@@ -159,7 +168,7 @@ async def favorite_view(
     )
     return MealReply(
         "\n".join(lines),
-        "favorite_view",
+        "ai_favorite_view" if favorite.review_required else "favorite_view",
         buttons=("restore",) if favorite.archived else ("log", "archive"),
         favorite_id=favorite.id,
         favorite_version_id=favorite.version_id,
@@ -214,16 +223,18 @@ async def _consume(
     message: Message,
     action_key: str,
     lead: str,
+    review_required: bool = False,
 ) -> MealReply:
     from nutrition_bot.application.draft_conversation import draft_receipt
 
     portions = scale_items(items, factor)
     timezone = str(reference.tzinfo)
     consumed_at = _date_timestamp(day, reference)
-    if any(item.estimate_basis for item in portions):
+    if review_required or any(item.estimate_basis for item in portions):
         draft = await create_draft(
             connection,
             DraftContent(
+                review_required=review_required,
                 label=label,
                 local_date=day,
                 timezone=timezone,
@@ -243,6 +254,7 @@ async def _consume(
         exact.append(
             MealItemInput(
                 recipe_share=item.recipe_share,
+                preparation_details=item.preparation_details,
                 food_version_id=item.food_version_id,
                 edible_milligrams=item.edible_milligrams,
                 original_quantity=item.original_quantity,
@@ -367,6 +379,7 @@ async def handle_reuse_message(
             message=message,
             action_key=action_key,
             lead=f"M{meal.id}r{meal.revision_number}",
+            review_required=await meal_requires_ai_review(connection, meal.id),
         )
     repeat = re.fullmatch(r"/repeat\s+(.+)", text, re.IGNORECASE)
     if repeat:
@@ -382,6 +395,7 @@ async def handle_reuse_message(
             message=message,
             action_key=action_key,
             lead=f"M{meal.id}r{meal.revision_number}",
+            review_required=await meal_requires_ai_review(connection, meal.id),
         )
     yesterday = re.fullmatch(r"same\s+(.+?)\s+as yesterday", text, re.IGNORECASE)
     if yesterday:
@@ -418,6 +432,7 @@ async def handle_reuse_message(
             message=message,
             action_key=action_key,
             lead=f"M{meal.id}r{meal.revision_number}",
+            review_required=await meal_requires_ai_review(connection, meal.id),
         )
     eating = re.fullmatch(r"/eat\s+(.+)", text, re.IGNORECASE)
     if eating:
@@ -469,6 +484,7 @@ async def handle_reuse_message(
         message=message,
         action_key=action_key,
         lead=f"F{favorite.id}v{favorite.version_number}",
+        review_required=favorite.review_required,
     )
 
 
@@ -501,6 +517,7 @@ async def handle_favorite_callback(
                 message=message,
                 action_key=action_key,
                 lead=f"F{favorite.id}v{favorite.version_number}",
+                review_required=favorite.review_required,
             )
         if action not in {"archive", "restore"}:
             raise ReuseError("Unknown favorite action.")

@@ -394,7 +394,9 @@ async def test_database_rejects_incomplete_estimate_metadata(store, food, change
                 .returning(meal_revisions.c.id)
             )
         ).scalar_one()
-        values = first.items[0].model_dump(mode="json", exclude={"nutrients"})
+        values = first.items[0].model_dump(
+            mode="json", exclude={"nutrients", "preparation_details"}
+        )
         values.update(changes)
         with pytest.raises(IntegrityError, match="meal_quantity_method"):
             await connection.execute(

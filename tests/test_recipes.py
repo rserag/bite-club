@@ -431,7 +431,9 @@ async def test_populated_upgrade_downgrade_preserves_ordinary_meal_data_and_guar
     config = Config()
     config.set_main_option("script_location", MIGRATIONS)
     config.attributes["database_url"] = settings.resolved_database_url
-    await asyncio.to_thread(command.upgrade, config, "0010_recipe_shares")
+    # Current application readers require current schema; the historical
+    # preservation boundary itself is checked below with unchanged raw rows.
+    await asyncio.to_thread(command.upgrade, config, "head")
     store = Store(settings)
     try:
         async with store.write() as connection:
@@ -455,7 +457,7 @@ async def test_populated_upgrade_downgrade_preserves_ordinary_meal_data_and_guar
         guards = dict(
             connection.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
         )
-    await asyncio.to_thread(command.upgrade, config, "0010_recipe_shares")
+    await asyncio.to_thread(command.upgrade, config, "head")
     store = Store(settings)
     try:
         async with store.write() as connection:
@@ -478,7 +480,7 @@ async def test_downgrade_refuses_to_erase_consumed_recipe_meaning(settings):
     config = Config()
     config.set_main_option("script_location", MIGRATIONS)
     config.attributes["database_url"] = settings.resolved_database_url
-    await asyncio.to_thread(command.upgrade, config, "0010_recipe_shares")
+    await asyncio.to_thread(command.upgrade, config, "head")
     store = Store(settings)
     try:
         async with store.write() as connection:
@@ -489,8 +491,35 @@ async def test_downgrade_refuses_to_erase_consumed_recipe_meaning(settings):
             )
     finally:
         await store.close()
+    # Reach the exact recipe migration before testing its refusal. Current
+    # application code is not invoked against this historical schema.
+    await asyncio.to_thread(command.downgrade, config, "0010_recipe_shares")
+    with closing(sqlite3.connect(settings.database_path)) as connection:
+        tables = [
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+        ]
+        before = {name: connection.execute(f'SELECT * FROM "{name}"').fetchall() for name in tables}
+        guards = connection.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name"
+        ).fetchall()
     with pytest.raises(RuntimeError, match="Recipe provenance exists"):
         await asyncio.to_thread(command.downgrade, config, "0009_recipes")
+    with closing(sqlite3.connect(settings.database_path)) as connection:
+        assert {
+            name: connection.execute(f'SELECT * FROM "{name}"').fetchall() for name in tables
+        } == before
+        assert (
+            connection.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name"
+            ).fetchall()
+            == guards
+        )
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    # Restore the compatible reader schema; the immutable meal still equals its
+    # original complete snapshot after the refused downgrade and round trip.
+    await asyncio.to_thread(command.upgrade, config, "head")
     store = Store(settings)
     try:
         async with store.engine.connect() as connection:

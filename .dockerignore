@@ -7,6 +7,7 @@ private/
 .codex/
 .env
 .env.*
+!.env.example
 *.sqlite
 *.sqlite3
 *.db
@@ -19,6 +20,9 @@ logs/
 .venv/
 __pycache__/
 *.pyc
+# Docker context patterns also need explicit recursive cache exclusions.
+**/__pycache__/
+**/*.pyc
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

@@ -5,12 +5,20 @@ checks never authorize an old draft, including before the periodic cleanup runs.
 """
 
 import math
-from typing import Literal
+from typing import Any, Literal
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from nutrition_bot.adapters.database.schema import actions, food_versions, inbox, meals, outbox
+from nutrition_bot.adapters.database.schema import (
+    actions,
+    food_versions,
+    inbox,
+    meal_revisions,
+    meals,
+    outbox,
+)
+from nutrition_bot.adapters.database.schema_ai import ai_requests
 from nutrition_bot.adapters.database.schema_drafts import (
     draft_action_links,
     draft_food_refs,
@@ -24,6 +32,44 @@ from nutrition_bot.domain.drafts import (
     MealDraft,
 )
 from nutrition_bot.domain.food import MAX_INTEGER
+
+
+def _content_payload(content: DraftContent) -> dict[str, Any]:
+    payload = content.model_dump(mode="json")
+    # Older readers reject unfamiliar JSON fields. Preserve their shape when
+    # no preparation was supplied; active notes require the matching new image.
+    for item in payload["items"]:
+        if item["preparation_details"] is None:
+            del item["preparation_details"]
+    return payload
+
+
+async def meal_requires_ai_review(connection: AsyncConnection, meal_id: int) -> bool:
+    """Retain AI-origin review across measured edits, repeats and raw-input expiry.
+
+    New review approvals have a content-free action kind. Older AI drafts can
+    be traced through their durable request claim without keeping prompts or
+    temporary draft contents.
+    """
+    _identifier(meal_id)
+    if await connection.scalar(
+        sa.select(meal_revisions.c.id)
+        .join(actions, actions.c.key == meal_revisions.c.action_key)
+        .where(meal_revisions.c.meal_id == meal_id, actions.c.kind == "ai_meal_receipt")
+        .limit(1)
+    ):
+        return True
+    return (
+        await connection.scalar(
+            sa.select(meal_drafts.c.id)
+            .join(draft_action_links, draft_action_links.c.draft_id == meal_drafts.c.id)
+            .join(actions, actions.c.key == draft_action_links.c.action_key)
+            .join(ai_requests, ai_requests.c.request_key == sa.cast(actions.c.update_id, sa.String))
+            .where(meal_drafts.c.saved_meal_id == meal_id)
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def _identifier(value: int) -> None:
@@ -136,7 +182,7 @@ async def create_draft(
         sa.insert(meal_drafts).values(
             revision=1,
             state="open",
-            content=content.model_dump(mode="json"),
+            content=_content_payload(content),
             source_chat_id=content.source_chat_id,
             source_message_id=content.source_message_id,
             created_action_key=action_key,
@@ -207,7 +253,7 @@ async def revise_draft(
         .where(meal_drafts.c.id == draft_id)
         .values(
             revision=draft.revision + 1,
-            content=content.model_dump(mode="json"),
+            content=_content_payload(content),
             last_user_activity_at=max(now, draft.last_user_activity_at),
         )
     )
